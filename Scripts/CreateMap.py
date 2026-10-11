@@ -54,7 +54,7 @@ materials['Sky'] = sky_material
 def prop(name, position, scale, shape='Cube', material='Stone', yaw=0, collision=True, hidden=False, pitch=0):
     actor = actors.spawn_actor_from_class(unreal.StaticMeshActor, unreal.Vector(*position))
     actor.set_actor_label('Open_' + name)
-    actor.set_actor_rotation(unreal.Rotator(pitch, yaw, 0), False)
+    actor.set_actor_rotation(unreal.Rotator(pitch=pitch, yaw=yaw, roll=0), False)
     mesh = actor.static_mesh_component
     mesh.set_static_mesh(meshes[shape])
     mesh.set_material(0, materials[material])
@@ -70,6 +70,7 @@ def prop(name, position, scale, shape='Cube', material='Stone', yaw=0, collision
 prop('HorizonGround', (0, 0, -90), (240, 240, 1), material='Earth', collision=False)
 prop('SkyDome', (0, 0, 0), (1600,1600,1600), shape='Sphere', material='Sky', collision=False)
 prop('Ground', (0, 0, -25), (64, 56, .5), material='Ground')
+prop('CentralGate', (0,0,2), (4.6,4.6,.04), shape='Cylinder', material='DarkStone', collision=False)
 for name, position, scale in [
     ('NorthLimit', (0, 2420, 100), (56.8, .4, 2)),
     ('SouthLimit', (0, -2420, 100), (56.8, .4, 2)),
@@ -129,7 +130,7 @@ for index,(x,y) in enumerate(((-2200,-1300),(2100,100),(2100,-1700),(-2200,500),
 current = actors.get_all_level_actors()
 suns = [a for a in current if isinstance(a, unreal.DirectionalLight)]
 sun = suns[0] if suns else actors.spawn_actor_from_class(unreal.DirectionalLight, unreal.Vector(0,0,900))
-sun.set_actor_rotation(unreal.Rotator(-48,-35,0), False)
+sun.set_actor_rotation(unreal.Rotator(pitch=-48, yaw=-35, roll=0), False)
 sun.light_component.set_editor_property('intensity', 5.0)
 sun.light_component.set_editor_property('atmosphere_sun_light', True)
 if not any(isinstance(a, unreal.SkyAtmosphere) for a in current):
@@ -144,4 +145,10 @@ if not any(isinstance(a, unreal.PlayerStart) for a in current):
     actors.spawn_actor_from_class(unreal.PlayerStart, unreal.Vector(-750,0,100))
 if not levels.save_current_level():
     raise RuntimeError('Map save failed')
+for actor in actors.get_all_level_actors():
+    if actor.get_actor_label().startswith(('Open_Route_', 'Open_Plaza_')):
+        rotation = actor.get_actor_rotation()
+        if abs(rotation.pitch) > .01 or abs(rotation.roll) > .01:
+            raise RuntimeError('Paving tile is tilted: ' + actor.get_actor_label())
+unreal.log('ASCENSION_PAVING_FLAT PASS')
 unreal.log('ASCENSION_OPEN_RUINS_READY playable_width=5600 playable_depth=4800 props=' + str(len(actors.get_all_level_actors())))
