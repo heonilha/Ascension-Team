@@ -21,3 +21,5 @@
 2026-10-11 생존 모드 검증: BuildSurvivalReady 성공. Scripts/VerifySurvival.ps1 / Survival.log에서 경험치 레벨업·세계 일시정지, 성장 선택 후 재개/장비 ID 유지, 번개+칼날 피해, 구슬 한 번 획득, 시간별 압박 증가, 일반 적 24/보스 포함 25 제한, 300초 경계의 보스 단일 생성, 보스 처치 후 탈출/장비 유지, 사망 성장 초기화, 새 생명 초기화 10개 항목 모두 PASS. GrowthChoice.png 렌더링 직접 확인. 최종 기능 적용 후 기존 Combat.log PASS wall_trials=20, SpawnSurvivalRegression.log PASS seeds=20. 300초 경계는 시각값 주입 검사이며 실제 5분 난이도 시험이 아니다. 보스는 기존 엘리트 외형·2연격을 재사용하며 보조 능력은 초기 효과다. Meshy 추가 비용 0.
 
 2026-10-11 검기·추적 검증: BuildBladeFinal 빌드 성공. Survival.log PASS: 검기 2명 관통/각 1회 피해, 벽에서 소멸, 900cm 거리의 몬스터 추적 입력, 공격 재사용 대기 중 실제 이동 거리와 속도 확인. 경험치·자동 보조 공격·보스·탈출·사망 초기화의 기존 생존 검사도 PASS. Combat.log 기존 근접 회귀 PASS wall_trials=20. 실패했던 검기 시험 위치는 기둥을 가로지르고 있어 개방된 중앙으로 옮겼으며 벽 차단 시험은 별도로 유지했다. 검기 효과와 이동 중 상체 동작은 초기 수준이다.
+
+BladeWave.png 실제 렌더링에서 이동 중 청록색 검기와 체력/경험치 UI 확인.
