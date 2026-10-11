@@ -183,6 +183,10 @@ public:
     int32 Wave = 1, SpawnedEnemies = 0;
     bool bEncounterCleared = false;
     bool bSurvival = false, bBossSpawned = false, bBossDefeated = false, bVictory = false;
+    int32 CurrentFloor = 1;
+    bool bRestArea = false;
+    void SummonGatekeeper();
+    void AdvanceFloor();
     double SurvivalStart = 0, ReinforcementReady = 0, EliteReady = 0;
     float SurvivalElapsed() const;
     static constexpr float ArenaHalfWidth = 2800.f;

@@ -407,6 +407,7 @@ void ACLHero::Skill()
 }
 void ACLHero::ReceiveHit(float Damage)
 {
+    if(const AAscensionMode* Mode=Cast<AAscensionMode>(GetWorld()->GetAuthGameMode()); Mode && Mode->bRestArea) return;
     if(HP<=0) return;
     if(Lab::Now(this)<ImmuneEnd) { PerfectUntil=Lab::Now(this)+2; Notice=TEXT("정확한 회피! 2초 안에 검으로 공격하면 반격 피해가 증가합니다."); return; }
     HurtUntil=Lab::Now(this)+.2;
@@ -445,8 +446,12 @@ void ACLHero::OfferAwakening()
 void ACLHero::UseAltar()
 {
     if(HP<=0 || !Offers.IsEmpty()) return;
-    if(AAscensionMode* Mode=Cast<AAscensionMode>(GetWorld()->GetAuthGameMode()); Mode && Mode->bSurvival && Mode->bBossDefeated && FVector::Dist2D(GetActorLocation(),FVector(-1100,900,0))<180)
-    { Mode->bVictory=true; Notice=TEXT("탈출 성공! 장비를 지켰습니다. R: 새 생명 시작"); UGameplayStatics::SetGamePaused(this,true); return; }
+    if(AAscensionMode* Mode=Cast<AAscensionMode>(GetWorld()->GetAuthGameMode()); Mode && Mode->bSurvival)
+    {
+        if(Mode->bRestArea) { Notice=TEXT("휴식 구역에 도착했습니다. 이번 등반 완료! R: 새 도전"); return; }
+        if(FVector::Dist2D(GetActorLocation(),FVector::ZeroVector)<300)
+        { if(Mode->bBossDefeated) Mode->AdvanceFloor(); else Mode->SummonGatekeeper(); return; }
+    }
     ACLDrop* Nearest=nullptr; float Best=FMath::Square(200.f);
     for(TActorIterator<ACLDrop> It(GetWorld());It;++It)
     {
@@ -651,7 +656,7 @@ void ACLEnemy::ReceiveHit(float Damage,FVector PushDirection)
         if(AAscensionMode* Mode=Cast<AAscensionMode>(GetWorld()->GetAuthGameMode()); Mode && Mode->bSurvival)
         {
             if(ACLExperience* Orb=GetWorld()->SpawnActor<ACLExperience>(GetActorLocation(),FRotator::ZeroRotator)) Orb->Value=bBoss?120:Kind==2?40:Kind==1?12:8;
-            if(bBoss) { Mode->bBossDefeated=true; if(ACLHero* P=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0))) P->Notice=TEXT("보스 처치! 초록 탈출구에서 E를 누르세요."); }
+            if(bBoss) { Mode->bBossDefeated=true; if(ACLHero* P=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0))) P->Notice=TEXT("수문장 처치! 중앙의 초록 출구에서 E: 다음 층"); }
         }
         DrawDebugString(GetWorld(),DamageTextOrigin+FVector(0,0,140),FString::Printf(TEXT("-%.0f"),Damage),nullptr,FColor(255,220,100),.65f,true,1.3f);
         ACLDrop* Drop=GetWorld()->SpawnActor<ACLDrop>(GetActorLocation()-FVector(0,0,55),FRotator::ZeroRotator);
@@ -748,9 +753,9 @@ void AAscensionMode::BeginPlay()
 {
     Super::BeginPlay(); bVerify=FParse::Param(FCommandLine::Get(),TEXT("AscensionVerify")); bView=FParse::Param(FCommandLine::Get(),TEXT("AscensionView")) || FParse::Param(FCommandLine::Get(),TEXT("AscensionMotionView")) || FParse::Param(FCommandLine::Get(),TEXT("AscensionCombatView")) || FParse::Param(FCommandLine::Get(),TEXT("AscensionCombatFeelView")); bSpawnVerify=FParse::Param(FCommandLine::Get(),TEXT("AscensionSpawnVerify"));
     bSurvival=(!bVerify && !bView && !bSpawnVerify) || FParse::Param(FCommandLine::Get(),TEXT("AscensionSurvivalVerify")) || FParse::Param(FCommandLine::Get(),TEXT("AscensionCombatVerify")) || FParse::Param(FCommandLine::Get(),TEXT("AscensionCombatFeelView")) || FParse::Param(FCommandLine::Get(),TEXT("AscensionSurvivalView")) || FParse::Param(FCommandLine::Get(),TEXT("AscensionWaveView"));
-    if(FParse::Param(FCommandLine::Get(),TEXT("AscensionHordeView"))) bView=bSurvival=true;
+    if(FParse::Param(FCommandLine::Get(),TEXT("AscensionHordeView")) || FParse::Param(FCommandLine::Get(),TEXT("AscensionFloorView"))) bView=bSurvival=true;
     ResetSurvival(); SpawnEncounter(); NextCheck=Lab::Now(this)+1;
-    if(bSurvival) if(ACLHero* P=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0))) P->Notice=TEXT("5분 생존 → 보스 처치 → 탈출구 E. 검은 직접, 번개와 칼날은 자동 공격합니다.");
+    if(bSurvival) if(ACLHero* P=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0))) P->Notice=TEXT("사냥하며 강화 → 중앙 제단 E로 수문장 소환 → 처치 후 중앙 E로 다음 층");
 }
 void AAscensionMode::Check(bool Condition,const TCHAR* Name)
 {
@@ -761,14 +766,18 @@ void AAscensionMode::Tick(float Delta)
 {
     Super::Tick(Delta);
     if(bSurvival && !bVerify && !bView) TickSurvival();
+    if(bView && FParse::Param(FCommandLine::Get(),TEXT("AscensionFloorView"))) TickSurvival();
     if(!bSurvival && !bVerify && !bView && !bSpawnVerify && !bEncounterCleared && SpawnedEnemies>0 && RemainingEnemies()==0)
     {
         bEncounterCleared=true;
         if(ACLHero* Hero=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0)); Hero && Hero->HP>0)
         { Hero->HP=FMath::Min(100.f,Hero->HP+20); if(Hero->Offers.IsEmpty()) Hero->Notice=TEXT("전투 완료! 체력 +20 / N: 다음 전투"); }
     }
-    DrawDebugCircle(GetWorld(),FVector(650,650,8),100,32,FColor::Yellow,false,-1,0,4,FVector::ForwardVector,FVector::RightVector,false);
-    DrawDebugString(GetWorld(),FVector(650,650,90),TEXT("각성 제단 / E / 생명당 3회"),nullptr,FColor::Yellow,0,true);
+    if(!bRestArea)
+    {
+        DrawDebugCircle(GetWorld(),FVector(650,650,8),100,32,FColor::Yellow,false,-1,0,4,FVector::ForwardVector,FVector::RightVector,false);
+        DrawDebugString(GetWorld(),FVector(650,650,90),TEXT("각성 제단 / E / 생명당 3회"),nullptr,FColor::Yellow,0,true);
+    }
     if(bVerify && VerifyStage==4 && !FParse::Param(FCommandLine::Get(),TEXT("AscensionCombatVerify")))
         if(ACLHero* Mover=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0))) Mover->AddMovementInput(FVector(-1,0,0),1);
     if(bVerify && VerifyStage==99) if(ACLHero* Mover=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0))) Mover->Forward(1);
@@ -783,6 +792,49 @@ void AAscensionMode::Tick(float Delta)
     ACLHero* P=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0));
     if(!P) { Check(false,TEXT("player_spawn")); FPlatformMisc::RequestExitWithStatus(false,1); return; }
     double T=Lab::Now(this);
+    if(bView && FParse::Param(FCommandLine::Get(),TEXT("AscensionFloorView")))
+    {
+        if(VerifyStage==0)
+        {
+            for(TActorIterator<ACLEnemy> It(GetWorld());It;++It) It->Destroy();
+            P->DisableInput(Cast<APlayerController>(P->Controller)); P->SetActorLocation(FVector(0,-250,100));
+            P->Arm->TargetArmLength=1000; P->Controller->SetControlRotation(FRotator(-30,90,0));
+            P->LightningReady=P->BladeReady=T+1000; P->UseAltar();
+            for(TActorIterator<ACLEnemy> It(GetWorld());It;++It) It->bFrozenForView=true;
+            Check(bBossSpawned && !bBossDefeated,TEXT("render_gatekeeper_summoned")); VerifyStage=1; NextCheck=T+1;
+        }
+        else if(VerifyStage==1)
+        { FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir()/TEXT("GatekeeperFight.png"),true,false); VerifyStage=2; NextCheck=T+.6; }
+        else if(VerifyStage==2)
+        {
+            for(TActorIterator<ACLEnemy> It(GetWorld());It;++It) if(It->bBoss) It->ReceiveHit(10000);
+            for(TActorIterator<ACLExperience> It(GetWorld());It;++It) It->Destroy(); P->Skip();
+            VerifyStage=3; NextCheck=T+.4;
+        }
+        else if(VerifyStage==3)
+        { FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir()/TEXT("FloorExitOpen.png"),true,false); VerifyStage=4; NextCheck=T+.6; }
+        else if(VerifyStage==4)
+        {
+            bView=false; P->UseAltar(); bView=true; ReinforcementReady=RefillReady=EliteReady=T+1000;
+            for(TActorIterator<ACLEnemy> It(GetWorld());It;++It) It->bFrozenForView=true;
+            P->Arm->TargetArmLength=650; P->Controller->SetControlRotation(FRotator(-30,0,0));
+            Check(CurrentFloor==2 && RemainingEnemies()==14,TEXT("render_second_floor")); VerifyStage=5; NextCheck=T+.7;
+        }
+        else if(VerifyStage==5)
+        { FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir()/TEXT("SecondFloor.png"),true,false); VerifyStage=6; NextCheck=T+.6; }
+        else if(VerifyStage==6)
+        {
+            P->SetActorLocation(FVector(0,-250,100)); P->UseAltar();
+            for(TActorIterator<ACLEnemy> It(GetWorld());It;++It) if(It->bBoss) It->ReceiveHit(10000);
+            for(TActorIterator<ACLExperience> It(GetWorld());It;++It) It->Destroy(); P->Skip(); P->UseAltar();
+            Check(bRestArea && CurrentFloor==3 && RemainingEnemies()==0,TEXT("render_rest_area")); VerifyStage=7; NextCheck=T+.7;
+        }
+        else if(VerifyStage==7)
+        { FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir()/TEXT("RestArea.png"),true,false); VerifyStage=8; NextCheck=T+.5; }
+        else
+        { UE_LOG(LogTemp,Display,TEXT("ASCENSION_FLOOR_VIEW %s"),bFailed?TEXT("FAIL"):TEXT("PASS")); FPlatformMisc::RequestExitWithStatus(false,bFailed?1:0); }
+        return;
+    }
     if(bView && FParse::Param(FCommandLine::Get(),TEXT("AscensionHordeView")))
     {
         if(VerifyStage==0)
@@ -1076,13 +1128,28 @@ void AAscensionMode::Tick(float Delta)
         Check(RemainingEnemies()>Before && Wave==7,TEXT("elapsed_time_increases_enemy_pressure"));
         SpawnSurvivalBatch(100); Check(RemainingEnemies()==MaxSurvivalEnemies,TEXT("survival_fills_and_respects_48_enemy_cap"));
         SurvivalStart=T-300; TickSurvival(); const int32 WithBoss=RemainingEnemies(); TickSurvival();
-        Check(bBossSpawned && RemainingEnemies()==WithBoss && WithBoss==MaxSurvivalEnemies+1,TEXT("five_minutes_spawns_one_boss"));
-        for(TActorIterator<ACLEnemy> It(GetWorld());It;++It) if(It->bBoss) { It->ReceiveHit(10000); break; }
-        P->Skip(); P->SetActorLocation(FVector(-1100,900,100)); P->UseAltar();
-        Check(bBossDefeated && bVictory && P->Weapon.ID==Gear,TEXT("boss_kill_unlocks_exit_preserves_equipment"));
-        UGameplayStatics::SetGamePaused(this,false); P->ReceiveHit(10000);
+        Check(!bBossSpawned && CurrentFloor==1 && WithBoss==MaxSurvivalEnemies,TEXT("elapsed_time_never_auto_summons_or_advances_floor"));
+        bool FixedStats=true; for(TActorIterator<ACLEnemy> It(GetWorld());It;++It) FixedStats&=It->MaxHP==(It->Kind==2?150:It->Kind==1?70:50);
+        Check(FixedStats,TEXT("floor_one_monster_health_does_not_scale_with_time"));
+        AdvanceFloor(); Check(CurrentFloor==1,TEXT("floor_exit_locked_until_gatekeeper_defeated"));
+        P->SetActorLocation(FVector(-750,0,100)); SummonGatekeeper(); Check(!bBossSpawned,TEXT("gatekeeper_summon_requires_central_range"));
+        P->SetActorLocation(FVector(0,-250,100)); P->UseAltar(); const int32 Summoned=RemainingEnemies(); P->UseAltar(); TickSurvival();
+        Check(bBossSpawned && Summoned==49 && RemainingEnemies()==Summoned && CurrentFloor==1,TEXT("central_gatekeeper_summons_once_without_new_reinforcements"));
+        for(TActorIterator<ACLEnemy> It(GetWorld());It;++It) if(It->bBoss)
+        { Check(It->HP==300 && FVector::Dist2D(It->GetActorLocation(),FVector::ZeroVector)<=331,TEXT("first_gatekeeper_has_fixed_health_and_central_position")); It->ReceiveHit(10000); break; }
+        AdvanceFloor(); Check(CurrentFloor==1,TEXT("pending_reward_choice_blocks_floor_transition"));
+        P->Skip(); P->PowerRank=2; const int32 SavedLevel=P->Level,SavedXP=P->Experience,SavedLightning=P->LightningRank;
+        bVerify=false; P->UseAltar(); bVerify=true;
+        Check(CurrentFloor==2 && !bBossSpawned && !bBossDefeated && !bVictory && RemainingEnemies()==14 && P->Weapon.ID==Gear && P->Level==SavedLevel && P->Experience==SavedXP && P->PowerRank==2 && P->LightningRank==SavedLightning,TEXT("second_floor_preserves_growth_and_gear_resets_encounter"));
+        bool SecondStats=true; for(TActorIterator<ACLEnemy> It(GetWorld());It;++It) SecondStats&=FMath::IsNearlyEqual(It->MaxHP,(It->Kind==1?70.f:50.f)*1.25f);
+        Check(SecondStats,TEXT("second_floor_has_fixed_higher_monster_health"));
+        P->SetActorLocation(FVector(0,-250,100)); P->UseAltar();
+        for(TActorIterator<ACLEnemy> It(GetWorld());It;++It) if(It->bBoss) { Check(It->HP==450,TEXT("second_gatekeeper_has_fixed_450_health")); It->ReceiveHit(10000); break; }
+        P->Skip(); P->UseAltar(); ReinforcementReady=RefillReady=EliteReady=0; TickSurvival(); P->ReceiveHit(10000);
+        Check(CurrentFloor==3 && bRestArea && bVictory && RemainingEnemies()==0 && P->HP==100 && P->PowerRank==2 && P->Weapon.ID==Gear,TEXT("rest_area_clears_combat_preserves_growth_and_prevents_damage"));
+        P->ResetLife(); P->ReceiveHit(10000);
         Check(P->HP==0 && P->Experience==0 && P->PowerRank==0 && P->LightningRank==0 && P->Awakenings.IsEmpty(),TEXT("death_clears_survival_growth"));
-        P->ResetLife(); Check(P->HP==100 && P->Level==1 && P->Experience==0 && P->LightningRank==1 && !bBossSpawned && !bVictory,TEXT("new_life_resets_survival_run"));
+        P->ResetLife(); Check(P->HP==100 && P->Level==1 && P->Experience==0 && P->LightningRank==1 && CurrentFloor==1 && !bRestArea && !bBossSpawned && !bVictory,TEXT("new_life_resets_survival_run"));
         P->DisableInput(Cast<APlayerController>(P->Controller)); P->Controller->SetControlRotation(FRotator(-30,0,0));
         for(TActorIterator<ACLEnemy> It(GetWorld());It;++It) It->bFrozenForView=true;
         P->LightningReady=P->BladeReady=T+1000; P->ConsumeMovementInputVector(); VerifyPosition=P->GetActorLocation(); P->Attack(); P->Forward(1);
@@ -1338,7 +1405,7 @@ int32 AAscensionMode::RemainingEnemies() const
 void AAscensionMode::StartNextEncounter()
 {
     ACLHero* P=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0)); if(!P || P->HP<=0) return;
-    if(bSurvival) { P->Notice=TEXT("생존 전투: 적은 자동으로 증가합니다. 5분 후 보스를 처치하고 탈출하세요."); return; }
+    if(bSurvival) { P->Notice=TEXT("중앙 수문장을 처치해야 다음 층으로 갈 수 있습니다. 중앙 제단 E: 소환/이동"); return; }
     if(RemainingEnemies()>0) { P->Notice=TEXT("남은 몬스터를 처치한 뒤 다음 전투를 시작할 수 있습니다."); return; }
     if(!P->Offers.IsEmpty()) { P->Notice=TEXT("각성을 선택하거나 Esc로 포기한 뒤 N을 누르세요."); return; }
     ++Wave; SpawnEncounter(); P->Notice=FString::Printf(TEXT("%d번째 전투 시작! 장비와 각성은 유지됩니다."),Wave);
@@ -1348,17 +1415,41 @@ void AAscensionMode::ResetSurvival()
 {
     SurvivalStart=Lab::Now(this); ReinforcementReady=SurvivalStart+2.5; RefillReady=SurvivalStart+1; EliteReady=SurvivalStart+60;
     bBossSpawned=bBossDefeated=bVictory=false;
+    CurrentFloor=1; bRestArea=false;
     for(TActorIterator<ACLExperience> It(GetWorld());It;++It) It->Destroy();
+}
+void AAscensionMode::SummonGatekeeper()
+{
+    ACLHero* P=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0));
+    if(!P || P->HP<=0 || !bSurvival || bRestArea || bBossDefeated || FVector::Dist2D(P->GetActorLocation(),FVector::ZeroVector)>=300) return;
+    if(bBossSpawned) { P->Notice=TEXT("수문장과 전투 중입니다. 처치해야 중앙 출구가 열립니다."); return; }
+    SpawnSurvivalBatch(1,false,true);
+    if(!bBossSpawned) P->Notice=TEXT("중앙에 적이 너무 많습니다. 주변을 정리한 뒤 E로 다시 소환하세요.");
+}
+void AAscensionMode::AdvanceFloor()
+{
+    ACLHero* P=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0));
+    if(!P || P->HP<=0 || !bSurvival || bRestArea || !bBossDefeated || !P->Offers.IsEmpty() || FVector::Dist2D(P->GetActorLocation(),FVector::ZeroVector)>=300) return;
+    for(TActorIterator<ACLEnemy> It(GetWorld());It;++It) { It->SetActorEnableCollision(false); It->Destroy(); }
+    for(TActorIterator<ACLExperience> It(GetWorld());It;++It) It->Destroy();
+    for(TActorIterator<ACLBladeWave> It(GetWorld());It;++It) It->Destroy();
+    for(TActorIterator<ACLDrop> It(GetWorld());It;++It) It->Destroy();
+    const int32 NextFloor=CurrentFloor+1; ResetSurvival(); CurrentFloor=NextFloor; Wave=1;
+    P->Locked=nullptr; P->bCharging=false; P->ReleasedCharge=0; P->bResolved=true; P->bInventoryOpen=false; P->VisualState=-1;
+    P->AttackEnd=P->DodgeEnd=Lab::Now(this); P->ImmuneEnd=Lab::Now(this)+2; P->PerfectUntil=0;
+    P->ConsumeMovementInputVector(); P->GetCharacterMovement()->StopMovementImmediately();
+    P->SetActorLocation(NextFloor==3?FVector(-1100,900,100):FVector(-750,0,100));
+    if(NextFloor==3)
+    { bRestArea=bVictory=true; P->HP=100; P->Notice=TEXT("휴식 구역 도착! 두 층 등반 완료 · 성장과 장비 유지 · R: 새 도전"); }
+    else
+    { SpawnEncounter(); P->Notice=TEXT("2층 상층 정원 도착! 성장과 장비를 유지합니다. 사냥 후 중앙 수문장에 도전하세요."); }
+    UE_LOG(LogTemp,Display,TEXT("ASCENSION_FLOOR_ADVANCE floor=%d rest=%d level=%d"),CurrentFloor,bRestArea,P->Level);
 }
 void AAscensionMode::TickSurvival()
 {
     ACLHero* P=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0)); if(!P || P->HP<=0 || bVictory) return;
     const double T=Lab::Now(this); const float Elapsed=SurvivalElapsed(); Wave=1+int32(Elapsed/30);
-    if(Elapsed>=300)
-    {
-        if(!bBossSpawned) SpawnSurvivalBatch(1,false,true);
-    }
-    else
+    if(!bBossSpawned)
     {
         if(T>=ReinforcementReady) { SpawnSurvivalBatch(FMath::Min(4+int32(Elapsed/60),8)); ReinforcementReady=T+FMath::Max(1.5f,2.5f-Elapsed/240); }
         if(T>=RefillReady)
@@ -1368,25 +1459,28 @@ void AAscensionMode::TickSurvival()
         }
         if(T>=EliteReady) { SpawnSurvivalBatch(1,true); EliteReady=T+60; }
     }
-    if(bBossDefeated)
+    if(!bRestArea)
     {
-        const FVector Exit(-1100,900,10);
-        DrawDebugCircle(GetWorld(),Exit,120,32,FColor::Green,false,-1,0,5,FVector::ForwardVector,FVector::RightVector,false);
-        DrawDebugLine(GetWorld(),Exit,Exit+FVector(0,0,200),FColor::Green,false,-1,0,10);
-        DrawDebugString(GetWorld(),Exit+FVector(0,0,180),TEXT("탈출구 · E"),nullptr,FColor::Green,0,true);
+        const FVector Exit(0,0,10);
+        const FColor GateColor=bBossDefeated?FColor::Green:bBossSpawned?FColor::Red:FColor(255,190,70);
+        DrawDebugCircle(GetWorld(),Exit,200,40,GateColor,false,-1,0,5,FVector::ForwardVector,FVector::RightVector,false);
+        DrawDebugLine(GetWorld(),Exit,Exit+FVector(0,0,bBossDefeated?250:120),GateColor,false,-1,0,5);
+        DrawDebugString(GetWorld(),Exit+FVector(0,0,180),bBossDefeated?TEXT("출구 개방 · E: 다음 층"):bBossSpawned?TEXT("수문장 전투 중 · 출구 봉인"):TEXT("중앙 제단 · E: 수문장 소환"),nullptr,GateColor,0,true);
         FVector From=P->GetActorLocation(); From.Z=10;
-        DrawDebugDirectionalArrow(GetWorld(),From,From+(Exit-From).GetSafeNormal2D()*180,30,FColor::Green,false,-1,0,4);
+        if(bBossDefeated) DrawDebugDirectionalArrow(GetWorld(),From,From+(Exit-From).GetSafeNormal2D()*180,30,FColor::Green,false,-1,0,4);
     }
 }
 void AAscensionMode::SpawnSurvivalBatch(int32 Count,bool Elite,bool Boss)
 {
-    ACLHero* P=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0)); if(!P || P->HP<=0 || (Boss && bBossSpawned)) return;
+    ACLHero* P=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0)); if(!P || P->HP<=0 || bRestArea || (Boss && bBossSpawned)) return;
+    if(Boss) Count=FMath::Min(Count,1);
     for(int32 I=0;I<Count;++I)
     {
         if(!Boss && RemainingEnemies()>=MaxSurvivalEnemies) break;
         for(int32 Attempt=0;Attempt<150;++Attempt)
         {
-            FVector At=P->GetActorLocation()+FVector(FMath::FRandRange(650.f,1250.f),0,0).RotateAngleAxis(FMath::FRandRange(0.f,360.f),FVector::UpVector); At.Z=100;
+            FVector At=(Boss?FVector::ZeroVector:P->GetActorLocation())+FVector(Boss?FMath::FRandRange(0.f,330.f):FMath::FRandRange(650.f,1250.f),0,0).RotateAngleAxis(FMath::FRandRange(0.f,360.f),FVector::UpVector); At.Z=100;
+            if(Boss && FVector::Dist2D(At,P->GetActorLocation())<160) continue;
             if(FMath::Abs(At.X)>ArenaHalfWidth-100 || FMath::Abs(At.Y)>ArenaHalfDepth-100 || GetWorld()->OverlapBlockingTestByChannel(At,FQuat::Identity,ECC_WorldStatic,FCollisionShape::MakeCapsule(45,88))) continue;
             bool Safe=true; for(TActorIterator<ACLEnemy> It(GetWorld());It;++It) if(FVector::DistSquared2D(At,It->GetActorLocation())<FMath::Square(160.f)) { Safe=false; break; }
             if(!Safe) continue;
@@ -1394,9 +1488,9 @@ void AAscensionMode::SpawnSurvivalBatch(int32 Count,bool Elite,bool Boss)
             if(ACLEnemy* Enemy=GetWorld()->SpawnActor<ACLEnemy>(At,FRotator::ZeroRotator,Params))
             {
                 Enemy->Configure(Elite || Boss?2:FMath::FRand()<(SurvivalElapsed()<120?.25f:.5f)?1:0);
-                Enemy->HP=Enemy->MaxHP*=1.f+FMath::Min(.4f,SurvivalElapsed()/600.f);
+                Enemy->HP=Enemy->MaxHP*=1.f+.25f*(CurrentFloor-1);
                 Enemy->AlertUntil=Lab::Now(this)+600; ++SpawnedEnemies;
-                if(Boss) { Enemy->bBoss=true; Enemy->HP=Enemy->MaxHP=450; Enemy->GetMesh()->SetRelativeScale3D(Enemy->GetMesh()->GetRelativeScale3D()*1.25f); bBossSpawned=true; P->Notice=TEXT("5분 생존 성공! 심연의 수문장을 처치하고 탈출하세요."); }
+                if(Boss) { Enemy->bBoss=true; Enemy->HP=Enemy->MaxHP=CurrentFloor==1?300:450; Enemy->GetMesh()->SetRelativeScale3D(Enemy->GetMesh()->GetRelativeScale3D()*1.25f); bBossSpawned=true; P->Notice=TEXT("중앙 수문장 소환! 추가 증원은 멈춥니다. 처치 후 중앙 E: 다음 층"); }
                 break;
             }
         }
@@ -1409,7 +1503,7 @@ void AAscensionMode::SpawnEncounter(int32 Seed)
     bEncounterCleared=false; SpawnedEnemies=0;
     const bool Fixed=bVerify || (bView && !FParse::Param(FCommandLine::Get(),TEXT("AscensionCombatView")));
     const FVector FixedPositions[]={FVector(-250,300,100),FVector(400,-350,100),FVector(700,400,100)};
-    const int32 Count=Fixed?3:bSurvival?12:FMath::Clamp(6+Wave,7,10);
+    const int32 Count=Fixed?3:bSurvival?12+2*(CurrentFloor-1):FMath::Clamp(6+Wave,7,10);
     FRandomStream Random(Seed?Seed:FMath::Rand()); TArray<FVector> Occupied;
     ACLHero* P=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0)); const FVector PlayerAt=P?P->GetActorLocation():FVector(-750,0,100);
     for(int32 I=0;I<Count;++I)
@@ -1428,7 +1522,7 @@ void AAscensionMode::SpawnEncounter(int32 Seed)
         FActorSpawnParameters Params; Params.SpawnCollisionHandlingOverride=ESpawnActorCollisionHandlingMethod::DontSpawnIfColliding;
         if(ACLEnemy* Enemy=GetWorld()->SpawnActor<ACLEnemy>(At,FRotator::ZeroRotator,Params))
         {
-            Enemy->Configure(Kind); if(!Fixed) Enemy->HP=Enemy->MaxHP*=1.f+.08f*FMath::Min(Wave-1,5);
+            Enemy->Configure(Kind); if(!Fixed) Enemy->HP=Enemy->MaxHP*=bSurvival?1.f+.25f*(CurrentFloor-1):1.f+.08f*FMath::Min(Wave-1,5);
             if(bSurvival) Enemy->AlertUntil=Lab::Now(this)+600;
             Occupied.Add(Enemy->GetActorLocation()); ++SpawnedEnemies;
         }
@@ -1448,8 +1542,8 @@ void ACLHUD::DrawHUD()
     AAscensionMode* Mode=Cast<AAscensionMode>(GetWorld()->GetAuthGameMode());
     if(Mode && Mode->bSurvival)
     {
-        const int32 Seconds=FMath::Min(300,int32(Mode->SurvivalElapsed()));
-        DrawText(FString::Printf(TEXT("5분 생존 · %d:%02d / 5:00 · 적 %d%s"),Seconds/60,Seconds%60,Mode->RemainingEnemies(),Mode->bBossDefeated?TEXT(" · 초록 탈출구로 이동"):Mode->bBossSpawned?TEXT(" · 보스전"):TEXT("")),FLinearColor::White,25,22,nullptr,1.15);
+        const int32 Seconds=int32(Mode->SurvivalElapsed());
+        DrawText(Mode->bRestArea?TEXT("휴식 구역 · 두 층 등반 완료"):FString::Printf(TEXT("%d층 %s · 체류 %d:%02d · 적 %d · %s"),Mode->CurrentFloor,Mode->CurrentFloor==1?TEXT("폐허 정원"):TEXT("상층 정원"),Seconds/60,Seconds%60,Mode->RemainingEnemies(),Mode->bBossDefeated?TEXT("중앙 출구 개방"):Mode->bBossSpawned?TEXT("수문장 전투"):TEXT("사냥 / 중앙 E 소환")),FLinearColor::White,25,22,nullptr,1.15);
         DrawRect(FLinearColor(.12f,.15f,.22f),BarX,BarY+25,BarWidth,6);
         DrawRect(FLinearColor(.35f,.6f,1.f),BarX,BarY+25,BarWidth*FMath::Clamp(float(P->Experience)/P->ExperienceRequired(),0.f,1.f),6);
     }
@@ -1469,13 +1563,22 @@ void ACLHUD::DrawHUD()
         const float MinimumX=X+290.f*ACLHero::MinimumChargeSeconds/ACLHero::MaximumChargeSeconds;
         DrawLine(MinimumX,Y+2,MinimumX,Y+16,FLinearColor(.7f,.8f,1.f),2);
     }
-    DrawText(Mode && Mode->bSurvival?TEXT("Tab 락온 · Q 스킬 · E 제단/탈출 · I 가방 · R 새 생명"):TEXT("Tab 락온 · Q 스킬 · E 제단 · I 가방 · N 다음 전투 · R 다시 시작"),FLinearColor::White,25,97);
+    DrawText(Mode && Mode->bSurvival?TEXT("Tab 락온 · Q 스킬 · E 중앙 소환/층 이동 · I 가방 · R 새 도전"):TEXT("Tab 락온 · Q 스킬 · E 제단 · I 가방 · N 다음 전투 · R 다시 시작"),FLinearColor::White,25,97);
+    if(Mode && Mode->bSurvival && P->Offers.IsEmpty())
+        for(TActorIterator<ACLEnemy> It(GetWorld());It;++It) if(It->bBoss && It->HP>0)
+        {
+            const float X=Canvas->SizeX*.5f-210,Y=214;
+            DrawRect(FLinearColor(0,0,0,.85f),X-8,Y-4,436,49);
+            DrawText(FString::Printf(TEXT("%d층 중앙 수문장 · %.0f / %.0f"),Mode->CurrentFloor,It->HP,It->MaxHP),FLinearColor(1,.75f,.3f),X,Y);
+            DrawRect(FLinearColor(.25f,.12f,.1f),X,Y+25,420,10);
+            DrawRect(FLinearColor(.9f,.28f,.12f),X,Y+25,420*FMath::Clamp(It->HP/It->MaxHP,0.f,1.f),10); break;
+        }
     DrawText(P->Notice,FLinearColor::Yellow,25,123);
     FString Owned=TEXT("보유 각성: "); if(P->Awakenings.IsEmpty()) Owned+=TEXT("없음");
     for(int32 I=0;I<P->Awakenings.Num();++I) Owned+=FString::Printf(TEXT("[%d] %s   "),I+1,Lab::Names[P->Awakenings[I]]);
     DrawText(Owned,FLinearColor::White,25,148);
     DrawText(Mode && Mode->bSurvival?FString::Printf(TEXT("Lv %d · 경험치 %d/%d · 번개 %d · 칼날 %d · 검 강화 %d · 일반 검기 %d명"),P->Level,P->Experience,P->ExperienceRequired(),P->LightningRank,P->BladeRank,P->PowerRank,P->NormalWaveTargets()):TEXT("개발 중: 탑 등반 · 파티 · 멀티플레이"),FLinearColor(.7f,.8f,1.f),25,174);
-    if(Mode && Mode->bVictory) DrawText(TEXT("탈출 성공! 장비를 지켰습니다 · R: 다시 시작"),FLinearColor::Green,Canvas->SizeX*.5f-225,Canvas->SizeY*.5f,nullptr,1.4f);
+    if(Mode && Mode->bVictory) DrawText(TEXT("휴식 구역 도착! 등반 완료 · R: 새 도전"),FLinearColor::Green,Canvas->SizeX*.5f-245,Canvas->SizeY*.5f,nullptr,1.3f);
     if(Mode && Mode->bEncounterCleared) DrawText(TEXT("전투 완료 · N: 다음 전투"),FLinearColor::Yellow,Canvas->SizeX*.5f-170,Canvas->SizeY-45);
     if(Lab::Now(P)<P->HitMarkerUntil)
     {
