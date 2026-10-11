@@ -185,6 +185,10 @@ public:
     bool bSurvival = false, bBossSpawned = false, bBossDefeated = false, bVictory = false;
     double SurvivalStart = 0, ReinforcementReady = 0, EliteReady = 0;
     float SurvivalElapsed() const;
+    static constexpr float ArenaHalfWidth = 1800.f;
+    static constexpr float ArenaHalfDepth = 1600.f;
+    static constexpr int32 MaxSurvivalEnemies = 48;
+    double RefillReady = 0;
     void ResetSurvival();
     void TickSurvival();
     void SpawnSurvivalBatch(int32 Count,bool Elite=false,bool Boss=false);

@@ -747,6 +747,7 @@ void AAscensionMode::BeginPlay()
 {
     Super::BeginPlay(); bVerify=FParse::Param(FCommandLine::Get(),TEXT("AscensionVerify")); bView=FParse::Param(FCommandLine::Get(),TEXT("AscensionView")) || FParse::Param(FCommandLine::Get(),TEXT("AscensionMotionView")) || FParse::Param(FCommandLine::Get(),TEXT("AscensionCombatView")) || FParse::Param(FCommandLine::Get(),TEXT("AscensionCombatFeelView")); bSpawnVerify=FParse::Param(FCommandLine::Get(),TEXT("AscensionSpawnVerify"));
     bSurvival=(!bVerify && !bView && !bSpawnVerify) || FParse::Param(FCommandLine::Get(),TEXT("AscensionSurvivalVerify")) || FParse::Param(FCommandLine::Get(),TEXT("AscensionCombatVerify")) || FParse::Param(FCommandLine::Get(),TEXT("AscensionCombatFeelView")) || FParse::Param(FCommandLine::Get(),TEXT("AscensionSurvivalView")) || FParse::Param(FCommandLine::Get(),TEXT("AscensionWaveView"));
+    if(FParse::Param(FCommandLine::Get(),TEXT("AscensionHordeView"))) bView=bSurvival=true;
     ResetSurvival(); SpawnEncounter(); NextCheck=Lab::Now(this)+1;
     if(bSurvival) if(ACLHero* P=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0))) P->Notice=TEXT("5분 생존 → 보스 처치 → 탈출구 E. 검은 직접, 번개와 칼날은 자동 공격합니다.");
 }
@@ -758,7 +759,7 @@ void AAscensionMode::Check(bool Condition,const TCHAR* Name)
 void AAscensionMode::Tick(float Delta)
 {
     Super::Tick(Delta);
-    if(bSurvival && !bVerify) TickSurvival();
+    if(bSurvival && !bVerify && !bView) TickSurvival();
     if(!bSurvival && !bVerify && !bView && !bSpawnVerify && !bEncounterCleared && SpawnedEnemies>0 && RemainingEnemies()==0)
     {
         bEncounterCleared=true;
@@ -781,6 +782,35 @@ void AAscensionMode::Tick(float Delta)
     ACLHero* P=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0));
     if(!P) { Check(false,TEXT("player_spawn")); FPlatformMisc::RequestExitWithStatus(false,1); return; }
     double T=Lab::Now(this);
+    if(bView && FParse::Param(FCommandLine::Get(),TEXT("AscensionHordeView")))
+    {
+        if(VerifyStage==0)
+        {
+            P->DisableInput(Cast<APlayerController>(P->Controller)); P->SetActorLocation(FVector(0,0,100));
+            P->LightningReady=P->BladeReady=T+1000; bView=false; SpawnEncounter(20261011); bView=true;
+            SpawnSurvivalBatch(36); Check(RemainingEnemies()==48,TEXT("render_horde_spawns_48"));
+            P->Arm->bDoCollisionTest=false; P->Arm->TargetArmLength=2900; P->Controller->SetControlRotation(FRotator(-65,0,0));
+            VerifyStage=1; NextCheck=T+2.5;
+        }
+        else if(VerifyStage==1)
+        {
+            int32 Moving=0;
+            for(TActorIterator<ACLEnemy> It(GetWorld());It;++It)
+            { Moving+=It->GetVelocity().Size2D()>10; It->bFrozenForView=true; It->GetCharacterMovement()->StopMovementImmediately(); }
+            Check(RemainingEnemies()==48 && Moving>=30,TEXT("render_horde_actual_pursuit"));
+            UE_LOG(LogTemp,Display,TEXT("ASCENSION_HORDE_RENDER moving=%d count=%d"),Moving,RemainingEnemies());
+            FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir()/TEXT("ExpandedArena.png"),true,false); VerifyStage=2; NextCheck=T+1;
+        }
+        else if(VerifyStage==2)
+        {
+            P->Arm->TargetArmLength=650; P->Controller->SetControlRotation(FRotator(-30,0,0)); VerifyStage=3; NextCheck=T+1;
+        }
+        else if(VerifyStage==3)
+        { FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir()/TEXT("HordeCombat.png"),true,false); VerifyStage=4; NextCheck=T+1; }
+        else
+        { UE_LOG(LogTemp,Display,TEXT("ASCENSION_HORDE_VIEW %s"),bFailed?TEXT("FAIL"):TEXT("PASS")); FPlatformMisc::RequestExitWithStatus(false,bFailed?1:0); }
+        return;
+    }
     if(bVerify && FParse::Param(FCommandLine::Get(),TEXT("AscensionCombatVerify")))
     {
         if(VerifyStage==0)
@@ -874,12 +904,12 @@ void AAscensionMode::Tick(float Delta)
         }
         else if(VerifyStage==10)
         {
-            VerifyEnemy->bFrozenForView=false; VerifyEnemy->SetActorLocation(FVector(1460,0,100)); VerifyEnemy->HP=100; VerifyEnemy->ReactionReady=0;
+            VerifyEnemy->bFrozenForView=false; VerifyEnemy->SetActorLocation(FVector(ArenaHalfWidth-40,0,100)); VerifyEnemy->HP=100; VerifyEnemy->ReactionReady=0;
             VerifyEnemy->ReceiveHit(45,FVector::ForwardVector); VerifyStage=11; NextCheck=T+.1;
         }
         else if(VerifyStage==11)
         {
-            Check(VerifyEnemy->GetActorLocation().X>=1460 && VerifyEnemy->GetActorLocation().X<=1465.2f,TEXT("knockback_sweep_stops_at_wall"));
+            Check(VerifyEnemy->GetActorLocation().X>=ArenaHalfWidth-40 && VerifyEnemy->GetActorLocation().X<=ArenaHalfWidth-34.8f,TEXT("knockback_sweep_stops_at_wall"));
             VerifyEnemy->bFrozenForView=true; VerifyEnemy->Configure(2); VerifyEnemy->Phase=1; VerifyEnemy->ReactionReady=0; VerifyEnemy->ReceiveHit(10);
             Check(VerifyEnemy->Phase==1 && FMath::IsNearlyEqual(float(VerifyEnemy->StaggerUntil-T),.08f),TEXT("elite_has_short_reaction_preserves_attack"));
             VerifyEnemy->bBoss=true; VerifyEnemy->ReactionReady=0; VerifyEnemy->ReceiveHit(10);
@@ -994,6 +1024,32 @@ void AAscensionMode::Tick(float Delta)
         }
         for(TActorIterator<ACLEnemy> It(GetWorld());It;++It) It->Destroy();
         const FGuid Gear=P->Weapon.ID;
+        const FVector Corners[]={FVector(1670,1470,100),FVector(-1670,1470,100),FVector(1670,-1470,100),FVector(-1670,-1470,100)};
+        for(const FVector& Corner:Corners)
+        {
+            P->SetActorLocation(Corner); FHitResult Ground;
+            const bool Supported=GetWorld()->LineTraceSingleByChannel(Ground,Corner,Corner-FVector(0,0,200),ECC_Visibility);
+            SpawnSurvivalBatch(6); bool Safe=RemainingEnemies()==6;
+            for(TActorIterator<ACLEnemy> It(GetWorld());It;++It)
+            {
+                const FVector At=It->GetActorLocation();
+                Safe&=FMath::Abs(At.X)<=ArenaHalfWidth-100 && FMath::Abs(At.Y)<=ArenaHalfDepth-100 && FVector::Dist2D(At,Corner)>=640;
+                It->Destroy();
+            }
+            Check(Supported && Safe,TEXT("expanded_arena_corner_has_ground_and_safe_reinforcements"));
+        }
+        P->SetActorLocation(FVector(-750,0,100));
+        bVerify=false; SpawnEncounter(20261011); bVerify=true;
+        Check(RemainingEnemies()==12,TEXT("survival_starts_with_twelve_enemies"));
+        for(TActorIterator<ACLEnemy> It(GetWorld());It;++It) It->Destroy();
+        ResetSurvival(); ReinforcementReady=T+100; RefillReady=T; TickSurvival();
+        Check(RemainingEnemies()==4 && RefillReady>T,TEXT("low_population_refills_between_scheduled_batches"));
+        for(TActorIterator<ACLEnemy> It(GetWorld());It;++It) It->Destroy();
+        ResetSurvival(); ReinforcementReady=T; TickSurvival();
+        Check(RemainingEnemies()==4 && FMath::IsNearlyEqual(float(ReinforcementReady-T),2.5f),TEXT("early_reinforcements_every_2500ms"));
+        SurvivalStart=T-240; ReinforcementReady=T; RefillReady=T+100; EliteReady=T+100; const int32 Early=RemainingEnemies(); TickSurvival();
+        Check(RemainingEnemies()==Early+8 && FMath::IsNearlyEqual(float(ReinforcementReady-T),1.5f),TEXT("late_reinforcements_every_1500ms"));
+        for(TActorIterator<ACLEnemy> It(GetWorld());It;++It) It->Destroy(); ResetSurvival();
         P->GainExperience(25);
         Check(P->Level==2 && P->Experience==0 && P->Offers.Num()==3 && UGameplayStatics::IsGamePaused(this),TEXT("experience_level_choice_pauses_world"));
         P->Choose(0); Check(P->LightningRank==2 && !UGameplayStatics::IsGamePaused(this) && P->Weapon.ID==Gear,TEXT("growth_selection_resumes_preserves_gear"));
@@ -1010,15 +1066,15 @@ void AAscensionMode::Tick(float Delta)
             Check(Target->HP==15 && Behind && Behind->HP==45 && TestWave->HitEnemies.Num()==2,TEXT("blade_wave_pierces_and_hits_each_once")); TestWave->Destroy();
             // Actual enemy displacement and post-hit pursuit are covered by VerifyCombat.
         }
-        ACLBladeWave* WallWave=GetWorld()->SpawnActor<ACLBladeWave>(FVector(1400,0,100),FRotator::ZeroRotator);
+        ACLBladeWave* WallWave=GetWorld()->SpawnActor<ACLBladeWave>(FVector(ArenaHalfWidth-100,0,100),FRotator::ZeroRotator);
         WallWave->Hero=P; WallWave->Tick(.5f); Check(WallWave->IsActorBeingDestroyed(),TEXT("blade_wave_stops_at_wall"));
         ACLExperience* Orb=GetWorld()->SpawnActor<ACLExperience>(P->GetActorLocation(),FRotator::ZeroRotator);
         if(Orb) { Orb->Tick(.016f); Check(P->Experience==8 && Orb->Value==0 && !Orb->IsActorTickEnabled(),TEXT("experience_orb_collected_once")); }
         SurvivalStart=T-180; ReinforcementReady=EliteReady=0; const int32 Before=RemainingEnemies(); TickSurvival();
         Check(RemainingEnemies()>Before && Wave==7,TEXT("elapsed_time_increases_enemy_pressure"));
-        SpawnSurvivalBatch(100); Check(RemainingEnemies()<=24,TEXT("survival_enemy_cap"));
+        SpawnSurvivalBatch(100); Check(RemainingEnemies()==MaxSurvivalEnemies,TEXT("survival_fills_and_respects_48_enemy_cap"));
         SurvivalStart=T-300; TickSurvival(); const int32 WithBoss=RemainingEnemies(); TickSurvival();
-        Check(bBossSpawned && RemainingEnemies()==WithBoss && WithBoss<=25,TEXT("five_minutes_spawns_one_boss"));
+        Check(bBossSpawned && RemainingEnemies()==WithBoss && WithBoss==MaxSurvivalEnemies+1,TEXT("five_minutes_spawns_one_boss"));
         for(TActorIterator<ACLEnemy> It(GetWorld());It;++It) if(It->bBoss) { It->ReceiveHit(10000); break; }
         P->Skip(); P->SetActorLocation(FVector(-1100,900,100)); P->UseAltar();
         Check(bBossDefeated && bVictory && P->Weapon.ID==Gear,TEXT("boss_kill_unlocks_exit_preserves_equipment"));
@@ -1253,7 +1309,7 @@ void AAscensionMode::Tick(float Delta)
     }
     else if(VerifyStage==3)
     {
-        if(WallTrials>0) Check(P->GetActorLocation().X<1480 && P->GetActorLocation().X>1400,TEXT("wall_dodge_blocked"));
+        if(WallTrials>0) Check(P->GetActorLocation().X<ArenaHalfWidth-20 && P->GetActorLocation().X>ArenaHalfWidth-100,TEXT("wall_dodge_blocked"));
         if(WallTrials==20)
         {
             VerifyPosition=P->GetActorLocation(); P->AddMovementInput(FVector(-1,0,0),1);
@@ -1262,7 +1318,7 @@ void AAscensionMode::Tick(float Delta)
             VerifyEnemy=nullptr;
             return;
         }
-        P->SetActorLocation(FVector(1420,0,100)); P->Controller->SetControlRotation(FRotator(-30,0,0)); P->DodgeReady=0; P->Dodge();
+        P->SetActorLocation(FVector(ArenaHalfWidth-80,0,100)); P->Controller->SetControlRotation(FRotator(-30,0,0)); P->DodgeReady=0; P->Dodge();
         ++WallTrials; NextCheck=T+.75;
     }
     else
@@ -1288,7 +1344,7 @@ void AAscensionMode::StartNextEncounter()
 float AAscensionMode::SurvivalElapsed() const { return FMath::Max(0.f,float(Lab::Now(this)-SurvivalStart)); }
 void AAscensionMode::ResetSurvival()
 {
-    SurvivalStart=Lab::Now(this); ReinforcementReady=SurvivalStart+8; EliteReady=SurvivalStart+60;
+    SurvivalStart=Lab::Now(this); ReinforcementReady=SurvivalStart+2.5; RefillReady=SurvivalStart+1; EliteReady=SurvivalStart+60;
     bBossSpawned=bBossDefeated=bVictory=false;
     for(TActorIterator<ACLExperience> It(GetWorld());It;++It) It->Destroy();
 }
@@ -1302,7 +1358,12 @@ void AAscensionMode::TickSurvival()
     }
     else
     {
-        if(T>=ReinforcementReady) { SpawnSurvivalBatch(FMath::Min(3+int32(Elapsed/60),7)); ReinforcementReady=T+FMath::Max(4.f,8.f-Elapsed/90); }
+        if(T>=ReinforcementReady) { SpawnSurvivalBatch(FMath::Min(4+int32(Elapsed/60),8)); ReinforcementReady=T+FMath::Max(1.5f,2.5f-Elapsed/240); }
+        if(T>=RefillReady)
+        {
+            const int32 Target=FMath::Min(12+int32(Elapsed/30)*2,28);
+            SpawnSurvivalBatch(FMath::Clamp(Target-RemainingEnemies(),0,4)); RefillReady=T+1;
+        }
         if(T>=EliteReady) { SpawnSurvivalBatch(1,true); EliteReady=T+60; }
     }
     if(bBossDefeated)
@@ -1320,11 +1381,11 @@ void AAscensionMode::SpawnSurvivalBatch(int32 Count,bool Elite,bool Boss)
     ACLHero* P=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0)); if(!P || P->HP<=0 || (Boss && bBossSpawned)) return;
     for(int32 I=0;I<Count;++I)
     {
-        if(!Boss && RemainingEnemies()>=24) break;
+        if(!Boss && RemainingEnemies()>=MaxSurvivalEnemies) break;
         for(int32 Attempt=0;Attempt<150;++Attempt)
         {
-            FVector At=P->GetActorLocation()+FVector(FMath::FRandRange(450.f,850.f),0,0).RotateAngleAxis(FMath::FRandRange(0.f,360.f),FVector::UpVector); At.Z=100;
-            if(FMath::Abs(At.X)>1350 || FMath::Abs(At.Y)>1350 || GetWorld()->OverlapBlockingTestByChannel(At,FQuat::Identity,ECC_WorldStatic,FCollisionShape::MakeCapsule(45,88))) continue;
+            FVector At=P->GetActorLocation()+FVector(FMath::FRandRange(650.f,1250.f),0,0).RotateAngleAxis(FMath::FRandRange(0.f,360.f),FVector::UpVector); At.Z=100;
+            if(FMath::Abs(At.X)>ArenaHalfWidth-100 || FMath::Abs(At.Y)>ArenaHalfDepth-100 || GetWorld()->OverlapBlockingTestByChannel(At,FQuat::Identity,ECC_WorldStatic,FCollisionShape::MakeCapsule(45,88))) continue;
             bool Safe=true; for(TActorIterator<ACLEnemy> It(GetWorld());It;++It) if(FVector::DistSquared2D(At,It->GetActorLocation())<FMath::Square(160.f)) { Safe=false; break; }
             if(!Safe) continue;
             FActorSpawnParameters Params; Params.SpawnCollisionHandlingOverride=ESpawnActorCollisionHandlingMethod::DontSpawnIfColliding;
@@ -1346,7 +1407,7 @@ void AAscensionMode::SpawnEncounter(int32 Seed)
     bEncounterCleared=false; SpawnedEnemies=0;
     const bool Fixed=bVerify || (bView && !FParse::Param(FCommandLine::Get(),TEXT("AscensionCombatView")));
     const FVector FixedPositions[]={FVector(-250,300,100),FVector(400,-350,100),FVector(700,400,100)};
-    const int32 Count=Fixed?3:FMath::Clamp(6+Wave,7,10);
+    const int32 Count=Fixed?3:bSurvival?12:FMath::Clamp(6+Wave,7,10);
     FRandomStream Random(Seed?Seed:FMath::Rand()); TArray<FVector> Occupied;
     ACLHero* P=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0)); const FVector PlayerAt=P?P->GetActorLocation():FVector(-750,0,100);
     for(int32 I=0;I<Count;++I)
