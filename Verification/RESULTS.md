@@ -11,3 +11,5 @@
 - 랜덤 전투·명중 실제 화면: RandomCombat.png(7마리), CombatImpact.png(20 피해·중앙 명중 표시·불꽃) 직접 확인. 초기 대기와 달리기의 서로 다른 전방 축을 분리해 보정했고 명중 디버그 구를 제거했다. BuildCombatFinal.log에서 최종 시각 수정 빌드 성공.
 
 원본 엔진 로그는 로컬 Verification에 보존하고 Git에는 요약과 화면을 기록한다. 자동 시험은 재미·난이도와 청감 품질을 검증하지 않는다. 타격감·다수 적 전투는 사용자 재플레이가 필요하다. 전체 D1/D2 완료가 아니다.
+
+2026-10-11 공격 정면 검사: -AscensionView -AscensionFacingVerify로 실제 렌더링 후 4방향 × 일반/강공격 8개 경우 검사. ASCENSION_FACING_VERIFY PASS attacks=8, 모든 실제 몸 정면 dot 1.000. AttackFacing.png, HeavyFacing.png 확인. BuildMonsterFacing.log 빌드 성공. 공격 중 이동 차단 등 기존 회귀 시험 ASCENSION_VERIFY PASS wall_trials=20. 기존 기록에서 공격 회전을 유지한다고 설명한 내용은 이번 보정으로 갱신한다.

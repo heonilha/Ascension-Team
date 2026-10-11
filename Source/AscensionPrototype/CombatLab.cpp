@@ -164,7 +164,9 @@ void ACLHero::Tick(float Delta)
     const float Impact=FMath::Clamp(float((CameraImpactUntil-T)/.12),0.f,1.f)*CameraImpactStrength;
     Camera->SetRelativeLocation(FVector(0,FMath::Sin(T*135)*Impact,FMath::Sin(T*175)*Impact*.55f));
     Lab::Visual(this,Clips,T<DodgeEnd?4:T<AttackEnd?(bHeavy?3:2):GetVelocity().SizeSquared2D()>100?1:0,VisualState,T<DodgeEnd?float(DodgeEnd-DodgeStart):T<AttackEnd?(bHeavy?.85f:.44f):0);
-    if(bHasModel && T>=AttackEnd && T>=DodgeEnd) Lab::AlignBodyForward(GetMesh());
+    // Slash clips have their own forward axis too; keep the visible torso on
+    // the actor's locked swing direction throughout normal and heavy attacks.
+    if(bHasModel && T>=DodgeEnd) Lab::AlignBodyForward(GetMesh());
     if(bHasModel)
     {
         const FBoxSphereBounds Bounds=GetMesh()->GetSkeletalMeshAsset()->GetImportedBounds();
@@ -515,6 +517,31 @@ void AAscensionMode::Tick(float Delta)
     }
     if(bView)
     {
+        if(FParse::Param(FCommandLine::Get(),TEXT("AscensionFacingVerify")) && VerifyStage>=2)
+        {
+            const int32 Step=(VerifyStage-2)/2;
+            if(Step>=8) { UE_LOG(LogTemp,Display,TEXT("ASCENSION_FACING_VERIFY %s attacks=8"),bFailed?TEXT("FAIL"):TEXT("PASS")); FPlatformMisc::RequestExitWithStatus(false,bFailed?1:0); return; }
+            if((VerifyStage-2)%2==0)
+            {
+                const float Yaws[]={0,90,-90,180};
+                P->Controller->SetControlRotation(FRotator(-30,Yaws[Step/2],0));
+                if(Step%2) P->Heavy(); else P->Attack();
+                ++VerifyStage; NextCheck=T+(Step%2?.35:.18);
+            }
+            else
+            {
+                USkeletalMeshComponent* Mesh=P->GetMesh();
+                const FVector Side=Mesh->GetSocketLocation(TEXT("RightShoulder"))-Mesh->GetSocketLocation(TEXT("LeftShoulder"));
+                const FVector Up=Mesh->GetSocketLocation(TEXT("Head"))-Mesh->GetSocketLocation(TEXT("Hips"));
+                const FVector Forward=FVector::CrossProduct(Side,Up).GetSafeNormal2D();
+                const float Dot=FVector::DotProduct(Forward,P->GetActorForwardVector());
+                UE_LOG(LogTemp,Display,TEXT("ASCENSION_ATTACK_FACING step=%d heavy=%d yaw=%.1f dot=%.3f"),Step,Step%2,P->GetActorRotation().Yaw,Dot);
+                Check(Dot>.99f,TEXT("attack_visible_body_faces_swing"));
+                if(Step<2) FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir()/(Step?TEXT("HeavyFacing.png"):TEXT("AttackFacing.png")),true,false);
+                ++VerifyStage; NextCheck=T+1;
+            }
+            return;
+        }
         if(FParse::Param(FCommandLine::Get(),TEXT("AscensionCombatView")) && VerifyStage>=2)
         {
             if(VerifyStage==2)
