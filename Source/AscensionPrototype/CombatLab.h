@@ -135,13 +135,14 @@ public:
     virtual void BeginPlay() override;
     virtual void Tick(float Delta) override;
     void Configure(int32 EnemyKind);
-    void ReceiveHit(float Damage);
+    void ReceiveHit(float Damage, FVector PushDirection = FVector::ZeroVector);
     int32 Kind = 0, Phase = 0;
     float HP = 50, MaxHP = 50;
     double Deadline = 0;
     double AlertUntil = 0;
     bool bFrozenForView = false;
     bool bBoss = false;
+    double StaggerUntil = 0, ReactionReady = 0;
     UPROPERTY() TObjectPtr<UStaticMeshComponent> Body;
 private:
     void BeginTell(); void Strike();
@@ -155,6 +156,8 @@ private:
     double DamageTextUntil = 0;
     float LastDamage = 0;
     FVector DamageTextOrigin;
+    FVector KnockbackDirection = FVector::ZeroVector;
+    float KnockbackRemaining = 0;
 };
 
 UCLASS()

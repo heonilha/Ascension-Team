@@ -462,6 +462,8 @@ ACLEnemy::ACLEnemy()
 {
     PrimaryActorTick.bCanEverTick=true; GetCapsuleComponent()->InitCapsuleSize(35,80);
     GetCharacterMovement()->MaxWalkSpeed=220; GetCharacterMovement()->bOrientRotationToMovement=false;
+    // These prototype enemies steer themselves without an AIController.
+    GetCharacterMovement()->bRunPhysicsWithNoController=true;
     static ConstructorHelpers::FObjectFinder<UStaticMesh> Cube(TEXT("/Engine/BasicShapes/Cube.Cube"));
     Body=CreateDefaultSubobject<UStaticMeshComponent>(TEXT("EnemyProxy")); Body->SetupAttachment(RootComponent);
     Body->SetStaticMesh(Cube.Object); Body->SetRelativeScale3D(FVector(.6,.6,1.4)); Body->SetCollisionEnabled(ECollisionEnabled::NoCollision);
@@ -510,7 +512,15 @@ void ACLEnemy::Tick(float Delta)
     FColor C=Kind==2?FColor::Purple:Kind==1?FColor::Orange:FColor::Red;
     DrawDebugString(GetWorld(),GetActorLocation()+FVector(0,0,Kind==2?150:110),FString::Printf(TEXT("%s %.0f/%.0f"),bBoss?TEXT("심연의 수문장"):Kind==2?TEXT("망령 지휘관"):Kind==1?TEXT("폭주 망령"):TEXT("망령 검병"),HP,MaxHP),nullptr,C,0,true);
     DrawDebugBox(GetWorld(),GetActorLocation(),Kind==2?FVector(45,45,90):FVector(30,40,70),GetActorQuat(),C,false,-1,0,3);
-    if(bFrozenForView) return;
+    if(bFrozenForView) { ConsumeMovementInputVector(); GetCharacterMovement()->StopMovementImmediately(); return; }
+    if(T<StaggerUntil)
+    {
+        ConsumeMovementInputVector(); GetCharacterMovement()->StopMovementImmediately();
+        const float Step=FMath::Min(KnockbackRemaining,KnockbackRemaining*Delta/FMath::Max(Delta,float(StaggerUntil-T)+Delta));
+        FHitResult Hit; SetActorLocation(GetActorLocation()+KnockbackDirection*Step,true,&Hit);
+        KnockbackRemaining=Hit.bBlockingHit?0:KnockbackRemaining-Step; return;
+    }
+    KnockbackRemaining=0;
     const AAscensionMode* Mode=Cast<AAscensionMode>(GetWorld()->GetAuthGameMode());
     const bool Pursue=Mode && Mode->bSurvival;
     const auto Chase=[&]()
@@ -550,7 +560,7 @@ void ACLEnemy::Tick(float Delta)
     }
     else { if(Pursue && Kind!=2 && To.Size2D()>170) Chase(); if(T>=Deadline) Phase=0; }
 }
-void ACLEnemy::ReceiveHit(float Damage)
+void ACLEnemy::ReceiveHit(float Damage,FVector PushDirection)
 {
     if(HP<=0) return; HP=FMath::Max(0.f,HP-Damage);
     LastDamage=Damage; DamageTextUntil=Lab::Now(this)+.65; DamageTextOrigin=GetActorLocation();
@@ -558,8 +568,18 @@ void ACLEnemy::ReceiveHit(float Damage)
     {
         CustomTimeDilation=.18f;
         GetWorldTimerManager().SetTimer(ImpactPauseTimer,FTimerDelegate::CreateWeakLambda(this,[this]() { CustomTimeDilation=1.f; }),.045f,false);
-        const AAscensionMode* Mode=Cast<AAscensionMode>(GetWorld()->GetAuthGameMode());
-        if(Kind==0 && (!Mode || !Mode->bSurvival)) { Phase=3; Deadline=Lab::Now(this)+.13; GetCharacterMovement()->StopMovementImmediately(); }
+        const double T=Lab::Now(this);
+        if(T>=ReactionReady)
+        {
+            const float Duration=bBoss?.04f:Kind==2?.08f:.16f;
+            StaggerUntil=T+Duration; ReactionReady=T+.35;
+            if(PushDirection.IsNearlyZero()) if(ACLHero* P=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0))) PushDirection=GetActorLocation()-P->GetActorLocation();
+            KnockbackDirection=PushDirection.GetSafeNormal2D();
+            KnockbackRemaining=bBoss?5.f:Kind==2?15.f:FMath::Clamp(Damage*1.5f,25.f,65.f);
+            ConsumeMovementInputVector(); GetCharacterMovement()->StopMovementImmediately();
+            if(Kind!=2) { Phase=3; Deadline=StaggerUntil; }
+            else Deadline+=Duration;
+        }
     }
     UE_LOG(LogTemp,Display,TEXT("ASCENSION_HIT kind=%d damage=%.0f hp=%.0f"),Kind,Damage,HP);
     if(HP==0)
@@ -610,7 +630,7 @@ void ACLBladeWave::Tick(float Delta)
         if(FVector::DistSquared(Nearest,It->GetActorLocation())<=FMath::Square(Radius+32) && !GetWorld()->LineTraceSingleByObjectType(Occluder,Start,It->GetActorLocation(),StaticObjects,Params))
         {
             HitEnemies.Add(TWeakObjectPtr<ACLEnemy>(*It)); const FVector Contact=It->GetActorLocation();
-            It->ReceiveHit(Damage); Hero->ImpactFeedback(3,Contact);
+            It->ReceiveHit(Damage,Direction); Hero->ImpactFeedback(3,Contact);
             if(--Pierces<=0) { Destroy(); return; }
         }
     }
