@@ -1,5 +1,7 @@
 # AscensionPrototype
 
+개발 저장소: [GitHub · AscensionPrototype](https://github.com/kimminseoung-source/AscensionPrototype) (비공개). 기능별 한국어 커밋과 개발 기록을 관리한다.
+
 새로운 3인칭 검 액션·각성 전투 프로토타입. 기존 TowerDemo와 별개의 프로젝트다.
 
 첫 단계: 전투층 1개에서 3인칭 이동, 검 일반/강공격, 회피, 강화 반격, Q 범위 스킬, 선택형 락온, 검병·돌진병·2연격 엘리트, 각성 선택·교체를 구현했다. 자동 시험과 실제 화면 검증 결과는 Docs/데모_검증결과.md에 별도로 기록한다.
