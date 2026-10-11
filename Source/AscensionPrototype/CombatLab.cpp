@@ -1,4 +1,5 @@
 #include "CombatLab.h"
+#include "HeroMotion.h"
 #include "Camera/CameraComponent.h"
 #include "GameFramework/SpringArmComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
@@ -159,6 +160,7 @@ void ACLHero::SetupPlayerInputComponent(UInputComponent* Input)
     Input->BindAxis("Forward",this,&ACLHero::Forward); Input->BindAxis("Right",this,&ACLHero::Right);
     Input->BindAxis("LookX",this,&ACLHero::LookX); Input->BindAxis("LookY",this,&ACLHero::LookY);
     Input->BindAction("Attack",IE_Pressed,this,&ACLHero::Attack); Input->BindAction("Heavy",IE_Pressed,this,&ACLHero::Heavy);
+    Input->BindAction("Heavy",IE_Released,this,&ACLHero::ReleaseHeavy);
     Input->BindAction("Dodge",IE_Pressed,this,&ACLHero::Dodge); Input->BindAction("Skill",IE_Pressed,this,&ACLHero::Skill);
     Input->BindAction("Lock",IE_Pressed,this,&ACLHero::ToggleLock); Input->BindAction("Restart",IE_Pressed,this,&ACLHero::ResetLife).bExecuteWhenPaused=true;
     Input->BindAction("Altar",IE_Pressed,this,&ACLHero::UseAltar);
@@ -178,20 +180,52 @@ void ACLHero::LookY(float V) { AddControllerPitchInput(V); }
 void ACLHero::Tick(float Delta)
 {
     Super::Tick(Delta); const double T=Lab::Now(this); if(HP<=0) return;
-    TryLevelUp(); if(bLevelChoice) return;
+    TryLevelUp(); if(!Offers.IsEmpty() || bInventoryOpen) bCharging=false;
+    if(bLevelChoice) return;
     TickAuxiliaryCombat();
     const float Impact=FMath::Clamp(float((CameraImpactUntil-T)/.12),0.f,1.f)*CameraImpactStrength;
     Camera->SetRelativeLocation(FVector(0,FMath::Sin(T*135)*Impact,FMath::Sin(T*175)*Impact*.55f));
-    const bool MovingWave=UsesBladeWave() && GetVelocity().SizeSquared2D()>100;
-    Lab::Visual(this,Clips,T<DodgeEnd?4:MovingWave?1:T<AttackEnd?(bHeavy?3:2):GetVelocity().SizeSquared2D()>100?1:0,VisualState,T<DodgeEnd?float(DodgeEnd-DodgeStart):T<AttackEnd && !MovingWave?(bHeavy?.95f:.68f):0);
+    // Show the sword motion while the capsule keeps moving. Charging holds
+    // the wind-up pose; release plays the remainder of the heavy slash.
+    const int32 State=T<DodgeEnd?4:bCharging?3:T<AttackEnd?(bHeavy?3:2):GetVelocity().SizeSquared2D()>100?1:0;
+    if(UsesBladeWave() && bHasModel)
+    {
+        if(State==4 && VisualState!=4) GetMesh()->SetRelativeRotation(FRotator(0,270,0));
+        UCLHeroMotion* Motion=Cast<UCLHeroMotion>(GetMesh()->GetAnimInstance());
+        if(!Motion) { GetMesh()->SetAnimInstanceClass(UCLHeroMotion::StaticClass()); Motion=Cast<UCLHeroMotion>(GetMesh()->GetAnimInstance()); }
+        if(Motion && Clips.Num()==5)
+        {
+            Motion->IdleClip=Clips[0]; Motion->RunClip=Clips[1];
+            Motion->BaseTime+=Delta; Motion->MovingWeight=FMath::Clamp(GetVelocity().Size2D()/220.f,0.f,1.f);
+            Motion->ActionWeight=State>=2?1.f:0.f;
+            if(State>=2 && Clips[State])
+            {
+                Motion->ActionClip=Clips[State]; Motion->bFullBodyAction=State==4;
+                if(State==4) Motion->ActionTime=float((T-DodgeStart)/(DodgeEnd-DodgeStart))*Clips[4]->GetPlayLength();
+                else if(bCharging) Motion->ActionTime=.55f+ChargeProgress()*.55f;
+                else
+                {
+                    const float Start=bHeavy?1.1f:.1f,Padding=bHeavy?.9f:.2f;
+                    Motion->ActionTime=Start+float((T-AttackStart)/(AttackEnd-AttackStart))*(Clips[State]->GetPlayLength()-Start-Padding);
+                }
+            }
+        }
+        VisualState=State;
+    }
+    else Lab::Visual(this,Clips,State,VisualState,T<DodgeEnd?float(DodgeEnd-DodgeStart):T<AttackEnd?float(AttackEnd-AttackStart):0);
+    if(bCharging)
+    {
+        const FVector Center=GetActorLocation()+FVector(0,0,30)+GetActorForwardVector()*50;
+        DrawDebugSphere(GetWorld(),Center,15+ChargeProgress()*35,16,FColor::Orange,false,-1,0,2);
+    }
     // Slash clips have their own forward axis too; keep the visible torso on
     // the actor's locked swing direction throughout normal and heavy attacks.
-    if(bHasModel && T>=DodgeEnd) Lab::AlignBodyForward(GetMesh(),T<AttackEnd?Delta:0.f);
+    if(bHasModel && T>=DodgeEnd) Lab::AlignBodyForward(GetMesh(),T<AttackEnd || bCharging?Delta:0.f);
     if(bHasModel)
     {
         const FBoxSphereBounds Bounds=GetMesh()->GetSkeletalMeshAsset()->GetImportedBounds();
         FVector Offset(0,0,-88-(Bounds.Origin.Z-Bounds.BoxExtent.Z)*GetMesh()->GetRelativeScale3D().Z);
-        if(T<DodgeEnd || T<AttackEnd)
+        if(T<DodgeEnd || T<AttackEnd || bCharging)
         {
             // Keep the animated pelvis over the capsule; gameplay owns horizontal roll travel.
             const FVector Hips=GetMesh()->GetBoneLocation(TEXT("hips"),EBoneSpaces::ComponentSpace);
@@ -222,24 +256,42 @@ void ACLHero::Tick(float Delta)
         DrawDebugLine(GetWorld(),GetActorLocation(),GetActorLocation()-DashDirection*70,FColor::Cyan,false,.15,0,4);
         // A wall blocks travel while the roll animation still finishes.
     }
-    if(!bResolved && T>=HitTime) { bResolved=true; ResolveSwing(); }
+    if(!bResolved && T>=HitTime)
+    {
+        if(UsesBladeWave()) { SwingDirection=FRotator(0,GetControlRotation().Yaw,0).Vector(); SetActorRotation(SwingDirection.Rotation()); }
+        bResolved=true; ResolveSwing();
+    }
     if(T<AttackEnd && !UsesBladeWave()) { Lab::Arc(GetWorld(),GetActorLocation(),SwingDirection,bHeavy?230:190,bHeavy?65:50,bResolved?FColor::White:FColor::Cyan); }
     const float Swing=T<AttackEnd ? FMath::Sin(float((T-AttackStart)/(AttackEnd-AttackStart))*PI)*120-60 : 0;
     if(!bHasModel) Sword->SetRelativeRotation(FRotator(0,Swing,0));
 }
 void ACLHero::Attack() { StartAttack(false); }
-void ACLHero::Heavy() { StartAttack(true); }
+float ACLHero::ChargeProgress() const { return bCharging?FMath::Clamp(float((Lab::Now(this)-ChargeStart)/1.2),0.f,1.f):0.f; }
+void ACLHero::Heavy()
+{
+    if(!UsesBladeWave()) { StartAttack(true); return; }
+    const double T=Lab::Now(this);
+    if(HP<=0 || bCharging || T<AttackEnd || T<DodgeEnd || !Offers.IsEmpty() || bInventoryOpen) return;
+    bCharging=true; ChargeStart=T; ReleasedCharge=0; VisualState=-1;
+}
+void ACLHero::ReleaseHeavy()
+{
+    if(!bCharging) return;
+    ReleasedCharge=ChargeProgress(); bCharging=false; VisualState=-1;
+    if(HP<=0 || !Offers.IsEmpty() || bInventoryOpen) return;
+    StartAttack(true);
+}
 void ACLHero::StartAttack(bool HeavyAttack)
 {
-    const double T=Lab::Now(this); if(HP<=0 || T<AttackEnd || T<DodgeEnd || !Offers.IsEmpty() || bInventoryOpen) return;
+    const double T=Lab::Now(this); if(HP<=0 || bCharging || T<AttackEnd || T<DodgeEnd || !Offers.IsEmpty() || bInventoryOpen) return;
     bHeavy=HeavyAttack; Combo=HeavyAttack?0:(T-LastCombo<1.1?Combo%3+1:1); LastCombo=T;
     bEmpowered=T<PerfectUntil; PerfectUntil=0;
     AttackStart=T; HitTime=T+(bHeavy?.46:.28);
     AttackEnd=T+(bHeavy?.95:.68)+(bHeavy && HasAwakening(4)?.45:0); bResolved=false;
     if(!UsesBladeWave()) { ConsumeMovementInputVector(); GetCharacterMovement()->StopMovementImmediately(); }
-    if(!UsesBladeWave() || GetVelocity().SizeSquared2D()<100) VisualState=-1;
+    VisualState=-1;
     SwingDirection=FRotator(0,GetControlRotation().Yaw,0).Vector(); SetActorRotation(SwingDirection.Rotation());
-    if(UsesBladeWave()) { HitTime=T; AttackEnd=T+(bHeavy?.5:.24)+(bHeavy && HasAwakening(4)?.45:0); bResolved=true; ResolveSwing(); }
+    if(UsesBladeWave()) { HitTime=T+(bHeavy?.34:.28); AttackEnd=T+(bHeavy?.85:.72)+(bHeavy && HasAwakening(4)?.45:0); }
 }
 void ACLHero::ResolveSwing()
 {
@@ -248,9 +300,10 @@ void ACLHero::ResolveSwing()
     if(bHeavy && HasAwakening(4)) Damage+=25;
     if(UsesBladeWave())
     {
+        if(bHeavy) Damage*=1.f+ReleasedCharge;
         FActorSpawnParameters Params; Params.Owner=this;
         if(ACLBladeWave* Wave=GetWorld()->SpawnActor<ACLBladeWave>(GetActorLocation()+SwingDirection*45,SwingDirection.Rotation(),Params))
-        { Wave->Hero=this; Wave->Direction=SwingDirection; Wave->Damage=Damage; Wave->Radius=bHeavy?90:55; Wave->Pierces=bHeavy?8:3; Wave->SetLifeSpan(bHeavy?1.6f:1.2f); }
+        { Wave->Hero=this; Wave->Direction=SwingDirection; Wave->Damage=Damage; Wave->Radius=bHeavy?70+ReleasedCharge*40:55; Wave->Pierces=bHeavy?4+FMath::RoundToInt(ReleasedCharge*4):3; Wave->SetLifeSpan(bHeavy?1.6f:1.2f); }
         return;
     }
     bool Hit=false; FVector Contact;
@@ -280,6 +333,7 @@ void ACLHero::TryLevelUp()
 {
     if(HP<=0 || !Offers.IsEmpty() || Experience<ExperienceRequired()) return;
     Experience-=ExperienceRequired(); ++Level; bLevelChoice=true; Offers={6,7,8}; PendingReplacement=-1;
+    bCharging=false;
     Notice=TEXT("레벨 업! 시간이 멈췄습니다. 1 · 2 · 3: 성장 선택 / Esc: 포기");
     UGameplayStatics::SetGamePaused(this,true);
 }
@@ -317,7 +371,7 @@ void ACLHero::TickAuxiliaryCombat()
 void ACLHero::Dodge()
 {
     double T=Lab::Now(this); if(HP<=0 || T<DodgeReady || T<DodgeEnd || (!bResolved && T<HitTime)) return;
-    AttackEnd=T; bResolved=true;
+    AttackEnd=T; bResolved=true; bCharging=false; ReleasedCharge=0;
     const FRotationMatrix CameraAxes(FRotator(0,GetControlRotation().Yaw,0));
     DashDirection=(CameraAxes.GetUnitAxis(EAxis::X)*MoveForward+CameraAxes.GetUnitAxis(EAxis::Y)*MoveRight).GetSafeNormal2D();
     if(DashDirection.IsNearlyZero()) DashDirection=FRotator(0,GetControlRotation().Yaw,0).Vector();
@@ -338,7 +392,7 @@ void ACLHero::Dodge()
 }
 void ACLHero::Skill()
 {
-    double T=Lab::Now(this); if(HP<=0 || T<SkillReady || T<AttackEnd || T<DodgeEnd || !Offers.IsEmpty() || bInventoryOpen) return;
+    double T=Lab::Now(this); if(HP<=0 || bCharging || T<SkillReady || T<AttackEnd || T<DodgeEnd || !Offers.IsEmpty() || bInventoryOpen) return;
     SkillReady=T+(HasAwakening(5)?4:6); float Range=HasAwakening(2)?440:320;
     DrawDebugSphere(GetWorld(),GetActorLocation(),Range,32,FColor::Cyan,false,.35,0,3);
     for(TActorIterator<ACLEnemy> It(GetWorld());It;++It) if(It->HP>0 && FVector::DistSquared(GetActorLocation(),It->GetActorLocation())<=FMath::Square(Range) && Lab::Clear(this,*It)) It->ReceiveHit(25);
@@ -356,7 +410,7 @@ void ACLHero::ReceiveHit(float Damage)
         Inventory.Empty(); Weapon=FCLItem(); Armor=FCLItem(); bInventoryOpen=false;
         GetMesh()->SetVisibility(false); Sword->SetVisibility(false); Body->SetVisibility(false);
         Awakenings.Empty(); Offers.Empty(); PendingReplacement=-1; Locked=nullptr; bResolved=true;
-        Level=1; Experience=PowerRank=LightningRank=BladeRank=0; bLevelChoice=false;
+        Level=1; Experience=PowerRank=LightningRank=BladeRank=0; bLevelChoice=false; bCharging=false; ReleasedCharge=0;
         CustomTimeDilation=1.f; Camera->SetRelativeLocation(FVector::ZeroVector);
         GetCharacterMovement()->StopMovementImmediately(); Notice=TEXT("사망했습니다. 각성이 초기화되었습니다. R: 다시 도전");
         UE_LOG(LogTemp,Display,TEXT("ASCENSION_DEATH life=%s"),*LifeID.ToString());
@@ -375,6 +429,7 @@ void ACLHero::ToggleLock()
 void ACLHero::OfferAwakening()
 {
     if(HP<=0 || !Offers.IsEmpty()) return;
+    bCharging=false;
     TArray<int32> Pool; for(int32 I=0;I<6;++I) if(!HasAwakening(I)) Pool.Add(I);
     while(!Pool.IsEmpty() && Offers.Num()<3) { int32 Index=FMath::RandRange(0,Pool.Num()-1); Offers.Add(Pool[Index]); Pool.RemoveAt(Index); }
     Notice=TEXT("1 · 2 · 3: 각성 선택 / Esc: 포기. 선택 중에도 적은 움직입니다.");
@@ -422,7 +477,7 @@ void ACLHero::Choose(int32 Index)
 void ACLHero::Skip() { if(bInventoryOpen) { bInventoryOpen=false; return; } Offers.Empty(); PendingReplacement=-1; if(bLevelChoice) { bLevelChoice=false; UGameplayStatics::SetGamePaused(this,false); } Notice=TEXT("새 강화를 포기했습니다. 기존 능력은 유지됩니다."); }
 float ACLHero::WeaponBonus() const { return Weapon.ID.IsValid()?Weapon.Tier*4.f:0; }
 float ACLHero::ArmorReduction() const { return Armor.ID.IsValid() && Armor.Tier==1?3.f:0; }
-void ACLHero::ToggleInventory() { if(HP>0 && Offers.IsEmpty()) { bInventoryOpen=!bInventoryOpen; SelectedItem=0; } }
+void ACLHero::ToggleInventory() { if(HP>0 && Offers.IsEmpty()) { bInventoryOpen=!bInventoryOpen; SelectedItem=0; if(bInventoryOpen) bCharging=false; } }
 void ACLHero::SelectPrevious() { if(bInventoryOpen && !Inventory.IsEmpty()) SelectedItem=(SelectedItem+Inventory.Num()-1)%Inventory.Num(); }
 void ACLHero::SelectNext() { if(bInventoryOpen && !Inventory.IsEmpty()) SelectedItem=(SelectedItem+1)%Inventory.Num(); }
 void ACLHero::EquipSelected()
@@ -449,7 +504,7 @@ void ACLHero::ResetLife()
     HP=100; Awakenings.Empty(); Offers.Empty(); PendingReplacement=-1; LifeID=FGuid::NewGuid(); Locked=nullptr;
     Inventory.Empty(); Weapon=Lab::Item(0,0); Armor=Lab::Item(1,0); bInventoryOpen=false; SelectedItem=0;
     GetMesh()->SetVisibility(bHasModel); Sword->SetVisibility(true); Body->SetVisibility(!bHasModel); VisualState=-1;
-    bResolved=true; AttackEnd=DodgeEnd=ImmuneEnd=DodgeReady=SkillReady=PerfectUntil=0; Combo=0; AltarUses=0; LastCombo=-100;
+    bResolved=true; bCharging=false; ReleasedCharge=0; AttackEnd=DodgeEnd=ImmuneEnd=DodgeReady=SkillReady=PerfectUntil=0; Combo=0; AltarUses=0; LastCombo=-100;
     MoveForward=MoveRight=0; HurtUntil=0;
     GetCharacterMovement()->StopMovementImmediately(); SetActorLocation(FVector(-750,0,100));
     GetWorldTimerManager().ClearTimer(ImpactPauseTimer); CustomTimeDilation=1.f; CameraImpactUntil=HitMarkerUntil=0; Camera->SetRelativeLocation(FVector::ZeroVector);
@@ -1099,7 +1154,15 @@ void ACLHUD::DrawHUD()
     }
     else DrawText(FString::Printf(TEXT("각성과 탐욕의 탑 · 전투 %d · 남은 몬스터 %d"),Mode?Mode->Wave:1,Mode?Mode->RemainingEnemies():0),FLinearColor::White,25,22,nullptr,1.15);
     DrawText(FString::Printf(TEXT("체력 %.0f / 100    회피 %.1f초    Q 스킬 %.1f초    락온 %s"),P->HP,FMath::Max(0.,P->DodgeReady-Lab::Now(P)),FMath::Max(0.,P->SkillReady-Lab::Now(P)),IsValid(P->Locked)?TEXT("켜짐"):TEXT("꺼짐")),FLinearColor::White,25,49);
-    DrawText(TEXT("WASD 이동 · 마우스 시점 · 좌클릭 검 공격 · 우클릭 강공격 · Space 회피"),FLinearColor::White,25,74);
+    DrawText(Mode && Mode->bSurvival?TEXT("WASD 이동 · 좌클릭 검기 · 우클릭 누르기: 충전 / 놓기: 발사 · Space 회피"):TEXT("WASD 이동 · 마우스 시점 · 좌클릭 검 공격 · 우클릭 강공격 · Space 회피"),FLinearColor::White,25,74);
+    if(P->IsCharging())
+    {
+        const float X=Canvas->SizeX*.5f-100,Y=Canvas->SizeY*.5f+65;
+        DrawRect(FLinearColor(0,0,0,.85f),X-8,Y-23,216,43);
+        DrawText(P->ChargeProgress()>=1?TEXT("최대 충전 · 놓으면 발사"):TEXT("검기 충전 중 · 놓으면 발사"),FLinearColor(1,.7f,.2f),X,Y-20);
+        DrawRect(FLinearColor(.2f,.15f,.08f),X,Y+4,200,8);
+        DrawRect(FLinearColor(1,.6f,.1f),X,Y+4,200*P->ChargeProgress(),8);
+    }
     DrawText(Mode && Mode->bSurvival?TEXT("Tab 락온 · Q 스킬 · E 획득/제단/탈출 · I 가방 · R 새 생명"):TEXT("Tab 락온 · Q 스킬 · E 획득/제단 · I 가방 · N 다음 전투 · R 다시 시작"),FLinearColor::White,25,97);
     DrawText(P->Notice,FLinearColor::Yellow,25,123);
     FString Owned=TEXT("보유 각성: "); if(P->Awakenings.IsEmpty()) Owned+=TEXT("없음");

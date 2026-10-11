@@ -67,7 +67,9 @@ public:
     void ReceiveHit(float Damage);
     void OfferAwakening();
     void ResetLife();
-    void Attack(); void Heavy(); void Dodge(); void Skill(); void ToggleLock();
+    void Attack(); void Heavy(); void ReleaseHeavy(); void Dodge(); void Skill(); void ToggleLock();
+    bool IsCharging() const { return bCharging; }
+    float ChargeProgress() const;
     void NextEncounter();
     void ImpactFeedback(float Strength, const FVector& Position);
     double HitMarkerUntil = 0;
@@ -114,6 +116,9 @@ private:
     double AttackStart = -100, AttackEnd = 0, HitTime = 0, DodgeStart = -100, DodgeEnd = 0, ImmuneEnd = 0, LastCombo = -100;
     float DodgeProgress = 0;
     bool bResolved = true, bHeavy = false, bEmpowered = false;
+    bool bCharging = false;
+    double ChargeStart = 0;
+    float ReleasedCharge = 0;
     FVector DashDirection = FVector::ForwardVector;
     FVector SwingDirection = FVector::ForwardVector;
     UPROPERTY() TArray<TObjectPtr<UAnimSequence>> Clips;
