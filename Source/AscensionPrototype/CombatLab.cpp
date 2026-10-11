@@ -801,6 +801,12 @@ void AAscensionMode::SpawnEncounter(int32 Seed)
 void ACLHUD::DrawHUD()
 {
     Super::DrawHUD(); ACLHero* P=Cast<ACLHero>(GetOwningPawn()); if(!P || !Canvas) return;
+    const float BarWidth=FMath::Min(360.f,Canvas->SizeX-48.f),BarX=(Canvas->SizeX-BarWidth)*.5f,BarY=Canvas->SizeY-85.f;
+    const float Health=FMath::Clamp(P->HP/100.f,0.f,1.f);
+    DrawRect(FLinearColor(0,0,0,.85f),BarX-12,BarY-28,BarWidth+24,62);
+    DrawText(FString::Printf(TEXT("체력  %.0f / 100%s"),P->HP,P->HP>0 && P->HP<=30?TEXT("  · 위험"):TEXT("")),FLinearColor::White,BarX,BarY-23,nullptr,1.1f);
+    DrawRect(FLinearColor(.2f,.2f,.23f,1),BarX,BarY,BarWidth,16);
+    DrawRect(Lab::Now(P)<P->HurtUntil?FLinearColor::White:Health<=.3f?FLinearColor(.9f,.12f,.1f):FLinearColor(.12f,.8f,.65f),BarX,BarY,BarWidth*Health,16);
     DrawRect(FLinearColor(0,0,0,.75f),12,12,FMath::Min(1000.f,Canvas->SizeX-24.f),190);
     AAscensionMode* Mode=Cast<AAscensionMode>(GetWorld()->GetAuthGameMode());
     DrawText(FString::Printf(TEXT("각성과 탐욕의 탑 · 전투 %d · 남은 몬스터 %d"),Mode?Mode->Wave:1,Mode?Mode->RemainingEnemies():0),FLinearColor::White,25,22,nullptr,1.15);

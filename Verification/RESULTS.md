@@ -15,3 +15,5 @@
 2026-10-11 공격 정면 검사: -AscensionView -AscensionFacingVerify로 실제 렌더링 후 4방향 × 일반/강공격 8개 경우 검사. ASCENSION_FACING_VERIFY PASS attacks=8, 모든 실제 몸 정면 dot 1.000. AttackFacing.png, HeavyFacing.png 확인. BuildMonsterFacing.log 빌드 성공. 공격 중 이동 차단 등 기존 회귀 시험 ASCENSION_VERIFY PASS wall_trials=20. 기존 기록에서 공격 회전을 유지한다고 설명한 내용은 이번 보정으로 갱신한다.
 
 2026-10-11 몬스터 모델 최종 검증: BuildMonsterFinal.log 빌드 성공. ImportUndead.log에서 별도 메시·스켈레톤·재질·대기·달리기·검 공격 저장 완료. MonsterView.log에서 ASCENSION_MONSTER_MODEL_LOADED clips=3/3 세 역할 모두 로드. Monsters.png 실제 화면 확인. MonsterSpawn.log: 20개 시드의 적 모두 UndeadSentinelRig이며 임시 몸체 숨김, 종류 조합·거리·배치·다음 전투 장비 유지 검사 PASS seeds=20. 최종 에셋 적용 후 Combat.log: ASCENSION_VERIFY PASS wall_trials=20. Meshy 잔액 API 1,642, 이번 26/누적 58크레딧. 도형 검·애니메이션 전환은 초기 수준이다.
+
+2026-10-11 이동·체력 검증: BuildInputHealth.log 성공, DodgeVerify PASS cases=8(공격 중 보관한 입력으로 실제 회피 이동), FacingVerify PASS attacks=8(일반 dot 약0.995, 강공격 약0.78: 자연스러운 몸 비틀림 허용, 공격 방향은 고정). 기존 전투 회귀 PASS wall_trials=20. HealthLow.png에서 25/100·붉은 25% 게이지 확인. 이전 몸 정면 dot 1 강제 고정 기록은 이번 부드러운 보정으로 대체한다.
