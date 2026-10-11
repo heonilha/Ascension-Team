@@ -9,6 +9,7 @@ class USpringArmComponent;
 class UCameraComponent;
 class UStaticMeshComponent;
 class ACLEnemy;
+class ACLHero;
 class UAnimSequence;
 
 USTRUCT()
@@ -41,6 +42,20 @@ public:
 };
 
 UCLASS()
+class ACLBladeWave : public AActor
+{
+    GENERATED_BODY()
+public:
+    ACLBladeWave();
+    virtual void Tick(float Delta) override;
+    FVector Direction = FVector::ForwardVector;
+    float Damage = 20, Speed = 1400, Radius = 55;
+    int32 Pierces = 3;
+    TWeakObjectPtr<ACLHero> Hero;
+    TSet<TWeakObjectPtr<ACLEnemy>> HitEnemies;
+};
+
+UCLASS()
 class ACLHero : public ACharacter
 {
     GENERATED_BODY()
@@ -60,6 +75,7 @@ public:
     void GainExperience(int32 Amount);
     void TryLevelUp();
     void TickAuxiliaryCombat();
+    bool UsesBladeWave() const;
     int32 Level = 1, Experience = 0, LightningRank = 1, BladeRank = 1, PowerRank = 0;
     int32 ExperienceRequired() const { return 25+15*(Level-1); }
     bool bLevelChoice = false;

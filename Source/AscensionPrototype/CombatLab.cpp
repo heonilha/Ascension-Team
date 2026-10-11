@@ -4,6 +4,7 @@
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "Components/SceneComponent.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/Canvas.h"
 #include "EngineUtils.h"
@@ -169,8 +170,9 @@ void ACLHero::SetupPlayerInputComponent(UInputComponent* Input)
     Input->BindAction("Choice1",IE_Pressed,this,&ACLHero::Choice1).bExecuteWhenPaused=true; Input->BindAction("Choice2",IE_Pressed,this,&ACLHero::Choice2).bExecuteWhenPaused=true;
     Input->BindAction("Choice3",IE_Pressed,this,&ACLHero::Choice3).bExecuteWhenPaused=true; Input->BindAction("Skip",IE_Pressed,this,&ACLHero::Skip).bExecuteWhenPaused=true;
 }
-void ACLHero::Forward(float V) { MoveForward=V; if(HP>0 && Lab::Now(this)>=DodgeEnd && Lab::Now(this)>=AttackEnd) AddMovementInput(FRotator(0,GetControlRotation().Yaw,0).Vector(),V); }
-void ACLHero::Right(float V) { MoveRight=V; if(HP>0 && Lab::Now(this)>=DodgeEnd && Lab::Now(this)>=AttackEnd) AddMovementInput(FRotationMatrix(FRotator(0,GetControlRotation().Yaw,0)).GetUnitAxis(EAxis::Y),V); }
+bool ACLHero::UsesBladeWave() const { const AAscensionMode* Mode=Cast<AAscensionMode>(GetWorld()->GetAuthGameMode()); return Mode && Mode->bSurvival; }
+void ACLHero::Forward(float V) { MoveForward=V; if(HP>0 && Lab::Now(this)>=DodgeEnd && (UsesBladeWave() || Lab::Now(this)>=AttackEnd)) AddMovementInput(FRotator(0,GetControlRotation().Yaw,0).Vector(),V); }
+void ACLHero::Right(float V) { MoveRight=V; if(HP>0 && Lab::Now(this)>=DodgeEnd && (UsesBladeWave() || Lab::Now(this)>=AttackEnd)) AddMovementInput(FRotationMatrix(FRotator(0,GetControlRotation().Yaw,0)).GetUnitAxis(EAxis::Y),V); }
 void ACLHero::LookX(float V) { if(!IsValid(Locked)) AddControllerYawInput(V); }
 void ACLHero::LookY(float V) { AddControllerPitchInput(V); }
 void ACLHero::Tick(float Delta)
@@ -180,7 +182,8 @@ void ACLHero::Tick(float Delta)
     TickAuxiliaryCombat();
     const float Impact=FMath::Clamp(float((CameraImpactUntil-T)/.12),0.f,1.f)*CameraImpactStrength;
     Camera->SetRelativeLocation(FVector(0,FMath::Sin(T*135)*Impact,FMath::Sin(T*175)*Impact*.55f));
-    Lab::Visual(this,Clips,T<DodgeEnd?4:T<AttackEnd?(bHeavy?3:2):GetVelocity().SizeSquared2D()>100?1:0,VisualState,T<DodgeEnd?float(DodgeEnd-DodgeStart):T<AttackEnd?(bHeavy?.95f:.68f):0);
+    const bool MovingWave=UsesBladeWave() && GetVelocity().SizeSquared2D()>100;
+    Lab::Visual(this,Clips,T<DodgeEnd?4:MovingWave?1:T<AttackEnd?(bHeavy?3:2):GetVelocity().SizeSquared2D()>100?1:0,VisualState,T<DodgeEnd?float(DodgeEnd-DodgeStart):T<AttackEnd && !MovingWave?(bHeavy?.95f:.68f):0);
     // Slash clips have their own forward axis too; keep the visible torso on
     // the actor's locked swing direction throughout normal and heavy attacks.
     if(bHasModel && T>=DodgeEnd) Lab::AlignBodyForward(GetMesh(),T<AttackEnd?Delta:0.f);
@@ -203,12 +206,12 @@ void ACLHero::Tick(float Delta)
         FRotator R=GetControlRotation(); R.Yaw=(Locked->GetActorLocation()-GetActorLocation()).Rotation().Yaw; Controller->SetControlRotation(R);
         DrawDebugSphere(GetWorld(),Locked->GetActorLocation()+FVector(0,0,120),25,12,FColor::Cyan,false,-1,0,2);
     }
-    if(T>=AttackEnd && T>=DodgeEnd)
+    if((UsesBladeWave() || T>=AttackEnd) && T>=DodgeEnd)
     {
         const FRotator Facing(0,GetControlRotation().Yaw,0);
         SetActorRotation(FMath::RInterpTo(GetActorRotation(),Facing,Delta,18.f));
     }
-    if(T<AttackEnd) { ConsumeMovementInputVector(); GetCharacterMovement()->StopMovementImmediately(); }
+    if(T<AttackEnd && !UsesBladeWave()) { ConsumeMovementInputVector(); GetCharacterMovement()->StopMovementImmediately(); }
     if(T<DodgeEnd)
     {
         // Integrate a smooth 300cm roll over 0.65s, independent of frame rate.
@@ -220,7 +223,7 @@ void ACLHero::Tick(float Delta)
         // A wall blocks travel while the roll animation still finishes.
     }
     if(!bResolved && T>=HitTime) { bResolved=true; ResolveSwing(); }
-    if(T<AttackEnd) { Lab::Arc(GetWorld(),GetActorLocation(),SwingDirection,bHeavy?230:190,bHeavy?65:50,bResolved?FColor::White:FColor::Cyan); }
+    if(T<AttackEnd && !UsesBladeWave()) { Lab::Arc(GetWorld(),GetActorLocation(),SwingDirection,bHeavy?230:190,bHeavy?65:50,bResolved?FColor::White:FColor::Cyan); }
     const float Swing=T<AttackEnd ? FMath::Sin(float((T-AttackStart)/(AttackEnd-AttackStart))*PI)*120-60 : 0;
     if(!bHasModel) Sword->SetRelativeRotation(FRotator(0,Swing,0));
 }
@@ -233,14 +236,23 @@ void ACLHero::StartAttack(bool HeavyAttack)
     bEmpowered=T<PerfectUntil; PerfectUntil=0;
     AttackStart=T; HitTime=T+(bHeavy?.46:.28);
     AttackEnd=T+(bHeavy?.95:.68)+(bHeavy && HasAwakening(4)?.45:0); bResolved=false;
-    ConsumeMovementInputVector(); GetCharacterMovement()->StopMovementImmediately(); VisualState=-1;
+    if(!UsesBladeWave()) { ConsumeMovementInputVector(); GetCharacterMovement()->StopMovementImmediately(); }
+    if(!UsesBladeWave() || GetVelocity().SizeSquared2D()<100) VisualState=-1;
     SwingDirection=FRotator(0,GetControlRotation().Yaw,0).Vector(); SetActorRotation(SwingDirection.Rotation());
+    if(UsesBladeWave()) { HitTime=T; AttackEnd=T+(bHeavy?.5:.24)+(bHeavy && HasAwakening(4)?.45:0); bResolved=true; ResolveSwing(); }
 }
 void ACLHero::ResolveSwing()
 {
     float Damage=(bHeavy?35:20)+WeaponBonus()+PowerRank*3; if(bEmpowered) Damage+=HasAwakening(0)?25:10;
     if(!bHeavy && Combo==3 && HasAwakening(1)) Damage+=12;
     if(bHeavy && HasAwakening(4)) Damage+=25;
+    if(UsesBladeWave())
+    {
+        FActorSpawnParameters Params; Params.Owner=this;
+        if(ACLBladeWave* Wave=GetWorld()->SpawnActor<ACLBladeWave>(GetActorLocation()+SwingDirection*45,SwingDirection.Rotation(),Params))
+        { Wave->Hero=this; Wave->Direction=SwingDirection; Wave->Damage=Damage; Wave->Radius=bHeavy?90:55; Wave->Pierces=bHeavy?8:3; Wave->SetLifeSpan(bHeavy?1.6f:1.2f); }
+        return;
+    }
     bool Hit=false; FVector Contact;
     for(TActorIterator<ACLEnemy> It(GetWorld());It;++It)
         if(It->HP>0 && Lab::InArc(this,*It,SwingDirection,bHeavy?230:190,bHeavy?65:50)) { Contact=It->GetActorLocation(); It->ReceiveHit(Damage); Hit=true; }
@@ -249,8 +261,8 @@ void ACLHero::ResolveSwing()
 void ACLHero::ImpactFeedback(float Strength,const FVector& Position)
 {
     const double T=Lab::Now(this); CameraImpactUntil=T+.12; CameraImpactStrength=Strength; HitMarkerUntil=T+.16;
-    CustomTimeDilation=.18f;
-    GetWorldTimerManager().SetTimer(ImpactPauseTimer,FTimerDelegate::CreateWeakLambda(this,[this]() { CustomTimeDilation=1.f; }),.045f,false);
+    if(!UsesBladeWave())
+    { CustomTimeDilation=.18f; GetWorldTimerManager().SetTimer(ImpactPauseTimer,FTimerDelegate::CreateWeakLambda(this,[this]() { CustomTimeDilation=1.f; }),.045f,false); }
     if(USoundBase* Sound=LoadObject<USoundBase>(nullptr,TEXT("/Game/Audio/SwordImpact.SwordImpact"))) UGameplayStatics::PlaySoundAtLocation(this,Sound,Position,.45f,FMath::FRandRange(.94f,1.06f));
     for(int32 I=0;I<10;++I) { const FVector Start=Position+FVector(0,0,15); DrawDebugLine(GetWorld(),Start,Start+FMath::VRand()*FMath::FRandRange(20.f,65.f),FColor(255,220,100),false,.1f,0,2); }
 }
@@ -499,10 +511,24 @@ void ACLEnemy::Tick(float Delta)
     DrawDebugString(GetWorld(),GetActorLocation()+FVector(0,0,Kind==2?150:110),FString::Printf(TEXT("%s %.0f/%.0f"),bBoss?TEXT("심연의 수문장"):Kind==2?TEXT("망령 지휘관"):Kind==1?TEXT("폭주 망령"):TEXT("망령 검병"),HP,MaxHP),nullptr,C,0,true);
     DrawDebugBox(GetWorld(),GetActorLocation(),Kind==2?FVector(45,45,90):FVector(30,40,70),GetActorQuat(),C,false,-1,0,3);
     if(bFrozenForView) return;
+    const AAscensionMode* Mode=Cast<AAscensionMode>(GetWorld()->GetAuthGameMode());
+    const bool Pursue=Mode && Mode->bSurvival;
+    const auto Chase=[&]()
+    {
+        FVector Desired=To.GetSafeNormal2D(); FCollisionQueryParams Params; Params.AddIgnoredActor(this);
+        FHitResult Obstacle;
+        for(float Angle:{0.f,45.f,-45.f,90.f,-90.f,135.f,-135.f})
+        {
+            const FVector Candidate=Desired.RotateAngleAxis(Angle,FVector::UpVector);
+            if(!GetWorld()->SweepSingleByChannel(Obstacle,GetActorLocation(),GetActorLocation()+Candidate*110,FQuat::Identity,ECC_WorldStatic,FCollisionShape::MakeCapsule(30,65),Params))
+            { AddMovementInput(Candidate); SetActorRotation(Candidate.Rotation()); break; }
+        }
+    };
     if(Phase==0)
     {
-        if(To.Size2D()>700 && T>=AlertUntil) return;
-        if(To.Size2D()<(Kind==1?650:155) && Lab::Clear(this,P)) BeginTell();
+        if(!Pursue && To.Size2D()>700 && T>=AlertUntil) return;
+        if(To.Size2D()<(Kind==1?(Pursue?360:650):155) && Lab::Clear(this,P)) BeginTell();
+        else if(Pursue) Chase();
         else { AddMovementInput(To.GetSafeNormal2D()); SetActorRotation(To.GetSafeNormal2D().Rotation()); }
     }
     else if(Phase==1)
@@ -522,7 +548,7 @@ void ACLEnemy::Tick(float Delta)
         if(!bDashHit && FVector::Dist2D(GetActorLocation(),P->GetActorLocation())<105 && Lab::Clear(this,P)) { P->ReceiveHit(15); bDashHit=true; }
         if(T>=Deadline || Hit.bBlockingHit) { Phase=3; Deadline=T+1.2; }
     }
-    else if(T>=Deadline) Phase=0;
+    else { if(Pursue && Kind!=2 && To.Size2D()>170) Chase(); if(T>=Deadline) Phase=0; }
 }
 void ACLEnemy::ReceiveHit(float Damage)
 {
@@ -532,7 +558,8 @@ void ACLEnemy::ReceiveHit(float Damage)
     {
         CustomTimeDilation=.18f;
         GetWorldTimerManager().SetTimer(ImpactPauseTimer,FTimerDelegate::CreateWeakLambda(this,[this]() { CustomTimeDilation=1.f; }),.045f,false);
-        if(Kind==0) { Phase=3; Deadline=Lab::Now(this)+.13; GetCharacterMovement()->StopMovementImmediately(); }
+        const AAscensionMode* Mode=Cast<AAscensionMode>(GetWorld()->GetAuthGameMode());
+        if(Kind==0 && (!Mode || !Mode->bSurvival)) { Phase=3; Deadline=Lab::Now(this)+.13; GetCharacterMovement()->StopMovementImmediately(); }
     }
     UE_LOG(LogTemp,Display,TEXT("ASCENSION_HIT kind=%d damage=%.0f hp=%.0f"),Kind,Damage,HP);
     if(HP==0)
@@ -562,6 +589,41 @@ void ACLDrop::Tick(float Delta)
     DrawDebugBox(GetWorld(),GetActorLocation(),FVector(27,22,22),FColor::Yellow,false,-1,0,3);
     DrawDebugString(GetWorld(),GetActorLocation()+FVector(0,0,50),FString::Printf(TEXT("장비 가방 / E / %d개"),Items.Num()),nullptr,FColor::Yellow,0,true);
 }
+ACLBladeWave::ACLBladeWave()
+{
+    PrimaryActorTick.bCanEverTick=true; InitialLifeSpan=1.2f;
+    SetRootComponent(CreateDefaultSubobject<USceneComponent>(TEXT("WaveRoot")));
+}
+void ACLBladeWave::Tick(float Delta)
+{
+    Super::Tick(Delta); if(!Hero.IsValid() || Hero->HP<=0) { Destroy(); return; }
+    const FVector Start=GetActorLocation(); FVector End=Start+Direction*Speed*Delta;
+    FHitResult Wall; FCollisionQueryParams Params; Params.AddIgnoredActor(this); Params.AddIgnoredActor(Hero.Get());
+    const FCollisionObjectQueryParams StaticObjects(ECC_WorldStatic);
+    const bool Blocked=GetWorld()->SweepSingleByObjectType(Wall,Start,End,FQuat::Identity,StaticObjects,FCollisionShape::MakeSphere(15),Params);
+    if(Blocked) End=Wall.Location;
+    for(TActorIterator<ACLEnemy> It(GetWorld());It;++It)
+    {
+        if(It->HP<=0 || HitEnemies.Contains(TWeakObjectPtr<ACLEnemy>(*It))) continue;
+        const FVector Nearest=FMath::ClosestPointOnSegment(It->GetActorLocation(),Start,End);
+        FHitResult Occluder;
+        if(FVector::DistSquared(Nearest,It->GetActorLocation())<=FMath::Square(Radius+32) && !GetWorld()->LineTraceSingleByObjectType(Occluder,Start,It->GetActorLocation(),StaticObjects,Params))
+        {
+            HitEnemies.Add(TWeakObjectPtr<ACLEnemy>(*It)); const FVector Contact=It->GetActorLocation();
+            It->ReceiveHit(Damage); Hero->ImpactFeedback(3,Contact);
+            if(--Pierces<=0) { Destroy(); return; }
+        }
+    }
+    SetActorLocation(End);
+    const FColor Color=Radius>60?FColor(255,200,70):FColor::Cyan;
+    for(int32 I=0;I<12;++I)
+    {
+        const FVector A=End-Direction.RotateAngleAxis(-65+130.f*I/12,FVector::UpVector)*Radius;
+        const FVector B=End-Direction.RotateAngleAxis(-65+130.f*(I+1)/12,FVector::UpVector)*Radius;
+        DrawDebugLine(GetWorld(),A,B,Color,false,.05f,0,7);
+    }
+    if(Blocked) Destroy();
+}
 ACLExperience::ACLExperience()
 {
     PrimaryActorTick.bCanEverTick=true; InitialLifeSpan=180;
@@ -581,7 +643,7 @@ AAscensionMode::AAscensionMode() { PrimaryActorTick.bCanEverTick=true; DefaultPa
 void AAscensionMode::BeginPlay()
 {
     Super::BeginPlay(); bVerify=FParse::Param(FCommandLine::Get(),TEXT("AscensionVerify")); bView=FParse::Param(FCommandLine::Get(),TEXT("AscensionView")) || FParse::Param(FCommandLine::Get(),TEXT("AscensionMotionView")) || FParse::Param(FCommandLine::Get(),TEXT("AscensionCombatView")); bSpawnVerify=FParse::Param(FCommandLine::Get(),TEXT("AscensionSpawnVerify"));
-    bSurvival=(!bVerify && !bView && !bSpawnVerify) || FParse::Param(FCommandLine::Get(),TEXT("AscensionSurvivalVerify")) || FParse::Param(FCommandLine::Get(),TEXT("AscensionSurvivalView"));
+    bSurvival=(!bVerify && !bView && !bSpawnVerify) || FParse::Param(FCommandLine::Get(),TEXT("AscensionSurvivalVerify")) || FParse::Param(FCommandLine::Get(),TEXT("AscensionSurvivalView")) || FParse::Param(FCommandLine::Get(),TEXT("AscensionWaveView"));
     ResetSurvival(); SpawnEncounter(); NextCheck=Lab::Now(this)+1;
     if(bSurvival) if(ACLHero* P=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0))) P->Notice=TEXT("5분 생존 → 보스 처치 → 탈출구 E. 검은 직접, 번개와 칼날은 자동 공격합니다.");
 }
@@ -604,6 +666,8 @@ void AAscensionMode::Tick(float Delta)
     DrawDebugString(GetWorld(),FVector(650,650,90),TEXT("각성 제단 / E / 생명당 3회"),nullptr,FColor::Yellow,0,true);
     if(bVerify && VerifyStage==4)
         if(ACLHero* Mover=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0))) Mover->AddMovementInput(FVector(-1,0,0),1);
+    if(bVerify && VerifyStage==99) if(ACLHero* Mover=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0))) Mover->Forward(1);
+    if(bView && VerifyStage==3 && FParse::Param(FCommandLine::Get(),TEXT("AscensionWaveView"))) if(ACLHero* Mover=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0))) Mover->Right(1);
     const bool MotionView=FParse::Param(FCommandLine::Get(),TEXT("AscensionMotionView"));
     if(bView && MotionView && VerifyStage==3)
         if(ACLHero* Mover=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0))) Mover->Right(1);
@@ -613,18 +677,32 @@ void AAscensionMode::Tick(float Delta)
     double T=Lab::Now(this);
     if(bVerify && FParse::Param(FCommandLine::Get(),TEXT("AscensionSurvivalVerify")))
     {
+        if(VerifyStage==99)
+        {
+            Check(P->GetActorLocation().X>VerifyPosition.X+2 && P->GetVelocity().Size2D()>10 && T<P->AttackEnd,TEXT("blade_attack_keeps_actual_movement"));
+            UE_LOG(LogTemp,Display,TEXT("ASCENSION_SURVIVAL_VERIFY %s"),bFailed?TEXT("FAIL"):TEXT("PASS")); FPlatformMisc::RequestExitWithStatus(false,bFailed?1:0); return;
+        }
         for(TActorIterator<ACLEnemy> It(GetWorld());It;++It) It->Destroy();
         const FGuid Gear=P->Weapon.ID;
         P->GainExperience(25);
         Check(P->Level==2 && P->Experience==0 && P->Offers.Num()==3 && UGameplayStatics::IsGamePaused(this),TEXT("experience_level_choice_pauses_world"));
         P->Choose(0); Check(P->LightningRank==2 && !UGameplayStatics::IsGamePaused(this) && P->Weapon.ID==Gear,TEXT("growth_selection_resumes_preserves_gear"));
-        P->SetActorLocation(FVector(0,-600,100));
+        P->SetActorLocation(FVector(0,0,100));
         ACLEnemy* Target=GetWorld()->SpawnActor<ACLEnemy>(P->GetActorLocation()+FVector(130,0,0),FRotator::ZeroRotator);
         if(Target)
         {
             Target->Configure(0); Target->SetActorTickEnabled(false); P->LightningReady=P->BladeReady=0; P->TickAuxiliaryCombat();
             Check(Target->HP==20,TEXT("automatic_lightning_and_blade_damage"));
+            ACLBladeWave* TestWave=GetWorld()->SpawnActor<ACLBladeWave>(P->GetActorLocation(),FRotator::ZeroRotator);
+            ACLEnemy* Behind=GetWorld()->SpawnActor<ACLEnemy>(P->GetActorLocation()+FVector(280,0,0),FRotator::ZeroRotator);
+            if(Behind) Behind->Configure(0);
+            TestWave->Hero=P; TestWave->Damage=5; TestWave->Tick(.2f); TestWave->Tick(.01f);
+            Check(Target->HP==15 && Behind && Behind->HP==45 && TestWave->HitEnemies.Num()==2,TEXT("blade_wave_pierces_and_hits_each_once")); TestWave->Destroy();
+            Target->SetActorLocation(P->GetActorLocation()+FVector(900,0,0)); Target->Phase=0; Target->AlertUntil=0; Target->ConsumeMovementInputVector(); Target->Tick(.016f);
+            Check(!Target->GetPendingMovementInputVector().IsNearlyZero(),TEXT("monster_pursues_beyond_old_aggro_distance"));
         }
+        ACLBladeWave* WallWave=GetWorld()->SpawnActor<ACLBladeWave>(FVector(1400,0,100),FRotator::ZeroRotator);
+        WallWave->Hero=P; WallWave->Tick(.5f); Check(WallWave->IsActorBeingDestroyed(),TEXT("blade_wave_stops_at_wall"));
         ACLExperience* Orb=GetWorld()->SpawnActor<ACLExperience>(P->GetActorLocation(),FRotator::ZeroRotator);
         if(Orb) { Orb->Tick(.016f); Check(P->Experience==8 && Orb->Value==0 && !Orb->IsActorTickEnabled(),TEXT("experience_orb_collected_once")); }
         SurvivalStart=T-180; ReinforcementReady=EliteReady=0; const int32 Before=RemainingEnemies(); TickSurvival();
@@ -638,7 +716,10 @@ void AAscensionMode::Tick(float Delta)
         UGameplayStatics::SetGamePaused(this,false); P->ReceiveHit(10000);
         Check(P->HP==0 && P->Experience==0 && P->PowerRank==0 && P->LightningRank==0 && P->Awakenings.IsEmpty(),TEXT("death_clears_survival_growth"));
         P->ResetLife(); Check(P->HP==100 && P->Level==1 && P->Experience==0 && P->LightningRank==1 && !bBossSpawned && !bVictory,TEXT("new_life_resets_survival_run"));
-        UE_LOG(LogTemp,Display,TEXT("ASCENSION_SURVIVAL_VERIFY %s"),bFailed?TEXT("FAIL"):TEXT("PASS")); FPlatformMisc::RequestExitWithStatus(false,bFailed?1:0); return;
+        P->DisableInput(Cast<APlayerController>(P->Controller)); P->Controller->SetControlRotation(FRotator(-30,0,0));
+        for(TActorIterator<ACLEnemy> It(GetWorld());It;++It) It->bFrozenForView=true;
+        P->LightningReady=P->BladeReady=T+1000; P->ConsumeMovementInputVector(); VerifyPosition=P->GetActorLocation(); P->Attack(); P->Forward(1);
+        VerifyStage=99; NextCheck=T+.12; return;
     }
     if(bSpawnVerify)
     {
@@ -666,6 +747,13 @@ void AAscensionMode::Tick(float Delta)
     }
     if(bView)
     {
+        if(FParse::Param(FCommandLine::Get(),TEXT("AscensionWaveView")) && VerifyStage>=2)
+        {
+            if(VerifyStage==2) { P->Attack(); P->Right(1); ++VerifyStage; NextCheck=T+.08; }
+            else if(VerifyStage==3) { FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir()/TEXT("BladeWave.png"),true,false); ++VerifyStage; NextCheck=T+.5; }
+            else FPlatformMisc::RequestExit(false);
+            return;
+        }
         if(FParse::Param(FCommandLine::Get(),TEXT("AscensionSurvivalView")) && VerifyStage>=2)
         {
             P->GainExperience(25); FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir()/TEXT("GrowthChoice.png"),true,false);
