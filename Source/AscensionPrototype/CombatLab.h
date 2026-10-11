@@ -188,9 +188,11 @@ private:
     void Check(bool Condition, const TCHAR* Name);
     bool bVerify = false, bView = false, bFailed = false, bSpawnVerify = false;
     int32 VerifyStage = 0, WallTrials = 0;
+    int32 MotionFrames = 0;
     double NextCheck = 0;
     FGuid PreviousLife;
     FVector VerifyPosition;
+    FVector VerifyEnemyPosition;
     UPROPERTY() TObjectPtr<ACLEnemy> VerifyEnemy;
 };
 

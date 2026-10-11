@@ -717,8 +717,8 @@ void ACLExperience::Tick(float Delta)
 AAscensionMode::AAscensionMode() { PrimaryActorTick.bCanEverTick=true; DefaultPawnClass=ACLHero::StaticClass(); HUDClass=ACLHUD::StaticClass(); }
 void AAscensionMode::BeginPlay()
 {
-    Super::BeginPlay(); bVerify=FParse::Param(FCommandLine::Get(),TEXT("AscensionVerify")); bView=FParse::Param(FCommandLine::Get(),TEXT("AscensionView")) || FParse::Param(FCommandLine::Get(),TEXT("AscensionMotionView")) || FParse::Param(FCommandLine::Get(),TEXT("AscensionCombatView")); bSpawnVerify=FParse::Param(FCommandLine::Get(),TEXT("AscensionSpawnVerify"));
-    bSurvival=(!bVerify && !bView && !bSpawnVerify) || FParse::Param(FCommandLine::Get(),TEXT("AscensionSurvivalVerify")) || FParse::Param(FCommandLine::Get(),TEXT("AscensionSurvivalView")) || FParse::Param(FCommandLine::Get(),TEXT("AscensionWaveView"));
+    Super::BeginPlay(); bVerify=FParse::Param(FCommandLine::Get(),TEXT("AscensionVerify")); bView=FParse::Param(FCommandLine::Get(),TEXT("AscensionView")) || FParse::Param(FCommandLine::Get(),TEXT("AscensionMotionView")) || FParse::Param(FCommandLine::Get(),TEXT("AscensionCombatView")) || FParse::Param(FCommandLine::Get(),TEXT("AscensionCombatFeelView")); bSpawnVerify=FParse::Param(FCommandLine::Get(),TEXT("AscensionSpawnVerify"));
+    bSurvival=(!bVerify && !bView && !bSpawnVerify) || FParse::Param(FCommandLine::Get(),TEXT("AscensionSurvivalVerify")) || FParse::Param(FCommandLine::Get(),TEXT("AscensionCombatVerify")) || FParse::Param(FCommandLine::Get(),TEXT("AscensionCombatFeelView")) || FParse::Param(FCommandLine::Get(),TEXT("AscensionSurvivalView")) || FParse::Param(FCommandLine::Get(),TEXT("AscensionWaveView"));
     ResetSurvival(); SpawnEncounter(); NextCheck=Lab::Now(this)+1;
     if(bSurvival) if(ACLHero* P=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0))) P->Notice=TEXT("5분 생존 → 보스 처치 → 탈출구 E. 검은 직접, 번개와 칼날은 자동 공격합니다.");
 }
@@ -739,9 +739,12 @@ void AAscensionMode::Tick(float Delta)
     }
     DrawDebugCircle(GetWorld(),FVector(650,650,8),100,32,FColor::Yellow,false,-1,0,4,FVector::ForwardVector,FVector::RightVector,false);
     DrawDebugString(GetWorld(),FVector(650,650,90),TEXT("각성 제단 / E / 생명당 3회"),nullptr,FColor::Yellow,0,true);
-    if(bVerify && VerifyStage==4)
+    if(bVerify && VerifyStage==4 && !FParse::Param(FCommandLine::Get(),TEXT("AscensionCombatVerify")))
         if(ACLHero* Mover=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0))) Mover->AddMovementInput(FVector(-1,0,0),1);
     if(bVerify && VerifyStage==99) if(ACLHero* Mover=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0))) Mover->Forward(1);
+    if(bVerify && VerifyStage==4 && FParse::Param(FCommandLine::Get(),TEXT("AscensionCombatVerify"))) if(ACLHero* Mover=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0))) Mover->Forward(1);
+    if(bView && (VerifyStage==2 || VerifyStage==9) && FParse::Param(FCommandLine::Get(),TEXT("AscensionCombatFeelView"))) if(ACLHero* Mover=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0))) Mover->Right(1);
+    if(bView && VerifyStage==9 && FParse::Param(FCommandLine::Get(),TEXT("AscensionCombatFeelView"))) ++MotionFrames;
     if(bView && VerifyStage==3 && FParse::Param(FCommandLine::Get(),TEXT("AscensionWaveView"))) if(ACLHero* Mover=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0))) Mover->Right(1);
     const bool MotionView=FParse::Param(FCommandLine::Get(),TEXT("AscensionMotionView"));
     if(bView && MotionView && VerifyStage==3)
@@ -750,6 +753,149 @@ void AAscensionMode::Tick(float Delta)
     ACLHero* P=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0));
     if(!P) { Check(false,TEXT("player_spawn")); FPlatformMisc::RequestExitWithStatus(false,1); return; }
     double T=Lab::Now(this);
+    if(bVerify && FParse::Param(FCommandLine::Get(),TEXT("AscensionCombatVerify")))
+    {
+        if(VerifyStage==0)
+        {
+            for(TActorIterator<ACLEnemy> It(GetWorld());It;++It) It->Destroy();
+            P->DisableInput(Cast<APlayerController>(P->Controller)); P->SetActorLocation(FVector(0,0,100)); P->Controller->SetControlRotation(FRotator(-30,0,0));
+            P->LightningReady=P->BladeReady=T+1000;
+            VerifyEnemy=GetWorld()->SpawnActor<ACLEnemy>(FVector(900,0,100),FRotator::ZeroRotator);
+            Check(IsValid(VerifyEnemy),TEXT("combat_test_enemy_spawn"));
+            if(!VerifyEnemy) { FPlatformMisc::RequestExitWithStatus(false,1); return; }
+            VerifyEnemyPosition=VerifyEnemy->GetActorLocation(); VerifyStage=1; NextCheck=T+.8;
+        }
+        else if(VerifyStage==1)
+        {
+            UE_LOG(LogTemp,Display,TEXT("ASCENSION_CHASE displacement=%.1f speed=%.1f"),VerifyEnemyPosition.X-VerifyEnemy->GetActorLocation().X,VerifyEnemy->GetVelocity().Size2D());
+            Check(VerifyEnemy->GetActorLocation().X<VerifyEnemyPosition.X-60 && VerifyEnemy->GetVelocity().Size2D()>100,TEXT("unpossessed_monster_actually_chases_from_900cm"));
+            VerifyEnemyPosition=VerifyEnemy->GetActorLocation(); VerifyEnemy->ReceiveHit(10,FVector::ForwardVector);
+            const double Reaction=VerifyEnemy->StaggerUntil; VerifyEnemy->ReceiveHit(1,FVector::ForwardVector);
+            Check(VerifyEnemy->StaggerUntil==Reaction,TEXT("repeated_hits_do_not_extend_stagger"));
+            VerifyStage=2; NextCheck=T+.1;
+        }
+        else if(VerifyStage==2)
+        {
+            Check(VerifyEnemy->GetActorLocation().X>VerifyEnemyPosition.X+2 && VerifyEnemy->GetVelocity().Size2D()<1 && T<VerifyEnemy->StaggerUntil,TEXT("hit_staggers_and_moves_enemy_backward"));
+            VerifyStage=3; NextCheck=T+.65;
+        }
+        else if(VerifyStage==3)
+        {
+            Check(VerifyEnemy->GetActorLocation().X<VerifyEnemyPosition.X-30 && VerifyEnemy->GetVelocity().Size2D()>100,TEXT("monster_resumes_chase_after_reaction"));
+            VerifyEnemy->bFrozenForView=true; VerifyEnemy->SetActorLocation(FVector(0,600,100));
+            P->ConsumeMovementInputVector(); P->GetCharacterMovement()->StopMovementImmediately(); VerifyPosition=P->GetActorLocation();
+            P->Attack(); VerifyStage=4; NextCheck=T+.18;
+        }
+        else if(VerifyStage==4)
+        {
+            Check(P->VisualState==2 && P->GetActorLocation().X>VerifyPosition.X+2 && P->GetVelocity().Size2D()>10,TEXT("moving_shot_plays_slash_without_stopping"));
+            const double Started=P->AttackStart; P->Attack();
+            Check(P->AttackStart==Started && FMath::IsNearlyEqual(float(P->AttackEnd-P->AttackStart),.72f),TEXT("normal_shot_has_720ms_cooldown"));
+            P->ConsumeMovementInputVector(); P->GetCharacterMovement()->StopMovementImmediately(); VerifyStage=5; NextCheck=T+.6;
+        }
+        else if(VerifyStage==5)
+        {
+            int32 Waves=0; for(TActorIterator<ACLBladeWave> It(GetWorld());It;++It) { ++Waves; It->Destroy(); }
+            Check(P->bResolved && Waves==1,TEXT("slash_fires_one_delayed_blade_wave"));
+            P->Heavy(); VerifyStage=6; NextCheck=T+.6;
+        }
+        else if(VerifyStage==6)
+        {
+            int32 Waves=0; for(TActorIterator<ACLBladeWave> It(GetWorld());It;++It) ++Waves;
+            Check(P->IsCharging() && P->ChargeProgress()>.45f && P->ChargeProgress()<.65f && P->VisualState==3 && Waves==0,TEXT("heavy_holds_windup_without_firing"));
+            const double Started=P->AttackStart; P->Attack(); Check(P->AttackStart==Started,TEXT("normal_attack_cannot_interrupt_charge"));
+            VerifyStage=7; NextCheck=T+.7;
+        }
+        else if(VerifyStage==7)
+        {
+            Check(P->ChargeProgress()==1.f,TEXT("charge_caps_at_1200ms"));
+            P->Controller->SetControlRotation(FRotator(-30,90,0)); P->ReleaseHeavy();
+            Check(!P->IsCharging() && !P->bResolved && FVector::DotProduct(P->SwingDirection,FVector::RightVector)>.99f,TEXT("heavy_release_uses_current_camera_aim"));
+            VerifyStage=8; NextCheck=T+.4;
+        }
+        else if(VerifyStage==8)
+        {
+            int32 Waves=0; bool Charged=false;
+            for(TActorIterator<ACLBladeWave> It(GetWorld());It;++It) { ++Waves; Charged=It->Damage==70 && It->Radius==110 && It->Pierces==8; It->Destroy(); }
+            Check(P->bResolved && Waves==1 && Charged,TEXT("full_charge_fires_single_70_damage_wave"));
+            VerifyStage=9; NextCheck=T+.6;
+        }
+        else if(VerifyStage==9)
+        {
+            P->Heavy(); Check(P->IsCharging(),TEXT("charge_can_restart_after_recovery"));
+            P->Dodge(); P->ReleaseHeavy(); Check(!P->IsCharging() && P->bResolved,TEXT("dodge_cancels_charge_without_release_shot"));
+            VerifyStage=10; NextCheck=T+.75;
+        }
+        else if(VerifyStage==10)
+        {
+            VerifyEnemy->bFrozenForView=false; VerifyEnemy->SetActorLocation(FVector(1460,0,100)); VerifyEnemy->HP=100; VerifyEnemy->ReactionReady=0;
+            VerifyEnemy->ReceiveHit(45,FVector::ForwardVector); VerifyStage=11; NextCheck=T+.1;
+        }
+        else if(VerifyStage==11)
+        {
+            Check(VerifyEnemy->GetActorLocation().X>=1460 && VerifyEnemy->GetActorLocation().X<=1465.2f,TEXT("knockback_sweep_stops_at_wall"));
+            VerifyEnemy->bFrozenForView=true; VerifyEnemy->Configure(2); VerifyEnemy->Phase=1; VerifyEnemy->ReactionReady=0; VerifyEnemy->ReceiveHit(10);
+            Check(VerifyEnemy->Phase==1 && FMath::IsNearlyEqual(float(VerifyEnemy->StaggerUntil-T),.08f),TEXT("elite_has_short_reaction_preserves_attack"));
+            VerifyEnemy->bBoss=true; VerifyEnemy->ReactionReady=0; VerifyEnemy->ReceiveHit(10);
+            Check(VerifyEnemy->Phase==1 && FMath::IsNearlyEqual(float(VerifyEnemy->StaggerUntil-T),.04f),TEXT("boss_resists_stagger"));
+            P->Heavy(); P->ToggleInventory(); P->ReleaseHeavy(); Check(!P->IsCharging() && P->bInventoryOpen && P->bResolved,TEXT("inventory_cancels_charge_without_shot")); P->ToggleInventory();
+            P->Heavy(); P->GainExperience(25); P->ReleaseHeavy(); Check(!P->IsCharging() && P->bLevelChoice && P->bResolved,TEXT("levelup_cancels_charge_while_paused")); P->Choose(0);
+            VerifyStage=12; NextCheck=T+.1;
+        }
+        else if(VerifyStage==12)
+        {
+            P->Heavy(); P->ReceiveHit(10000); P->ReleaseHeavy(); Check(!P->IsCharging() && P->HP==0,TEXT("death_cancels_charge"));
+            P->ResetLife(); Check(!P->IsCharging() && P->HP==100 && P->ReleasedCharge==0,TEXT("reset_clears_charge_state"));
+            UE_LOG(LogTemp,Display,TEXT("ASCENSION_COMBAT_VERIFY %s"),bFailed?TEXT("FAIL"):TEXT("PASS")); FPlatformMisc::RequestExitWithStatus(false,bFailed?1:0);
+        }
+        return;
+    }
+    if(bView && FParse::Param(FCommandLine::Get(),TEXT("AscensionCombatFeelView")))
+    {
+        if(VerifyStage==0)
+        {
+            P->DisableInput(Cast<APlayerController>(P->Controller)); P->SetActorLocation(FVector(-750,0,100)); P->Controller->SetControlRotation(FRotator(-30,0,0));
+            P->LightningReady=P->BladeReady=T+1000;
+            for(TActorIterator<ACLEnemy> It(GetWorld());It;++It) { It->bFrozenForView=true; It->GetCharacterMovement()->StopMovementImmediately(); }
+            VerifyStage=1; NextCheck=T+1;
+        }
+        else if(VerifyStage==1) { P->Attack(); VerifyStage=2; NextCheck=T+.18; }
+        else if(VerifyStage==2)
+        {
+            Check(P->VisualState==2 && P->GetVelocity().Size2D()>10,TEXT("render_moving_slash"));
+            VerifyPosition=P->GetActorTransform().InverseTransformPosition(P->GetMesh()->GetSocketLocation(TEXT("RightFoot")));
+            VerifyEnemyPosition=P->GetActorTransform().InverseTransformPosition(P->GetMesh()->GetSocketLocation(TEXT("RightHand")));
+            FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir()/TEXT("MovingSlashEarly.png"),true,false); VerifyStage=9; MotionFrames=0; NextCheck=T+.18;
+        }
+        else if(VerifyStage==9)
+        {
+            // A screenshot/shader hitch can advance world time in a single frame.
+            // Compare poses after several evaluated frames, not adjacent buffers.
+            if(MotionFrames<8) { NextCheck=T+.001; return; }
+            const FVector Foot=P->GetActorTransform().InverseTransformPosition(P->GetMesh()->GetSocketLocation(TEXT("RightFoot")));
+            const FVector Hand=P->GetActorTransform().InverseTransformPosition(P->GetMesh()->GetSocketLocation(TEXT("RightHand")));
+            Check(Cast<UCLHeroMotion>(P->GetMesh()->GetAnimInstance()) && FVector::Dist(Foot,VerifyPosition)>3 && FVector::Dist(Hand,VerifyEnemyPosition)>3,TEXT("render_feet_and_sword_hand_animate_while_moving"));
+            const FVector Side=P->GetMesh()->GetSocketLocation(TEXT("RightShoulder"))-P->GetMesh()->GetSocketLocation(TEXT("LeftShoulder"));
+            const FVector Up=P->GetMesh()->GetSocketLocation(TEXT("Head"))-P->GetMesh()->GetSocketLocation(TEXT("Hips"));
+            const float Dot=FVector::DotProduct(FVector::CrossProduct(Side,Up).GetSafeNormal2D(),P->GetActorForwardVector());
+            UE_LOG(LogTemp,Display,TEXT("ASCENSION_BLENDED_MOTION foot_delta=%.1f hand_delta=%.1f facing_dot=%.3f"),FVector::Dist(Foot,VerifyPosition),FVector::Dist(Hand,VerifyEnemyPosition),Dot);
+            Check(Dot>.65f,TEXT("render_blended_slash_faces_forward"));
+            FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir()/TEXT("MovingSlash.png"),true,false); VerifyStage=3; NextCheck=T+.6;
+        }
+        else if(VerifyStage==3) { P->ConsumeMovementInputVector(); P->GetCharacterMovement()->StopMovementImmediately(); P->Heavy(); VerifyStage=4; NextCheck=T+.85; }
+        else if(VerifyStage==4) { FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir()/TEXT("ChargingWave.png"),true,false); VerifyStage=5; NextCheck=T+.4; }
+        else if(VerifyStage==5) { P->ReleaseHeavy(); VerifyStage=6; NextCheck=T+.4; }
+        else if(VerifyStage==6) { FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir()/TEXT("ChargedRelease.png"),true,false); VerifyStage=7; NextCheck=T+1; }
+        else if(VerifyStage==7) { VerifyPosition=P->GetActorLocation(); P->Dodge(); VerifyStage=8; NextCheck=T+.3; }
+        else if(VerifyStage==8)
+        {
+            const float Travel=FVector::Dist2D(VerifyPosition,P->GetActorLocation());
+            Check(P->VisualState==4 && Travel>50 && Travel<250 && FVector::DotProduct(P->GetActorForwardVector(),P->DashDirection)>.99f,TEXT("render_full_body_roll_keeps_input_direction"));
+            FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir()/TEXT("WaveRoll.png"),true,false); VerifyStage=10; NextCheck=T+1;
+        }
+        else { UE_LOG(LogTemp,Display,TEXT("ASCENSION_COMBAT_FEEL_VIEW %s"),bFailed?TEXT("FAIL"):TEXT("PASS")); FPlatformMisc::RequestExitWithStatus(false,bFailed?1:0); }
+        return;
+    }
     if(bVerify && FParse::Param(FCommandLine::Get(),TEXT("AscensionSurvivalVerify")))
     {
         if(VerifyStage==99)
@@ -773,8 +919,7 @@ void AAscensionMode::Tick(float Delta)
             if(Behind) Behind->Configure(0);
             TestWave->Hero=P; TestWave->Damage=5; TestWave->Tick(.2f); TestWave->Tick(.01f);
             Check(Target->HP==15 && Behind && Behind->HP==45 && TestWave->HitEnemies.Num()==2,TEXT("blade_wave_pierces_and_hits_each_once")); TestWave->Destroy();
-            Target->SetActorLocation(P->GetActorLocation()+FVector(900,0,0)); Target->Phase=0; Target->AlertUntil=0; Target->ConsumeMovementInputVector(); Target->Tick(.016f);
-            Check(!Target->GetPendingMovementInputVector().IsNearlyZero(),TEXT("monster_pursues_beyond_old_aggro_distance"));
+            // Actual enemy displacement and post-hit pursuit are covered by VerifyCombat.
         }
         ACLBladeWave* WallWave=GetWorld()->SpawnActor<ACLBladeWave>(FVector(1400,0,100),FRotator::ZeroRotator);
         WallWave->Hero=P; WallWave->Tick(.5f); Check(WallWave->IsActorBeingDestroyed(),TEXT("blade_wave_stops_at_wall"));
