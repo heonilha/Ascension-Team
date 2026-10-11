@@ -1,0 +1,8 @@
+{
+  "initial_balance": 1700,
+  "minimum_remaining": 1000,
+  "maximum_total_spend": 700,
+  "additional_purchase_allowed": false,
+  "auto_top_up_allowed": false,
+  "strategy": "Generate one shared humanoid first; reuse for player and enemies; avoid speculative regeneration."
+}
