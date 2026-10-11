@@ -50,7 +50,7 @@ public:
     virtual void Tick(float Delta) override;
     FVector Direction = FVector::ForwardVector;
     float Damage = 20, Speed = 1400, Radius = 55;
-    int32 Pierces = 3;
+    int32 Pierces = 1;
     TWeakObjectPtr<ACLHero> Hero;
     TSet<TWeakObjectPtr<ACLEnemy>> HitEnemies;
 };
@@ -70,6 +70,7 @@ public:
     void Attack(); void Heavy(); void ReleaseHeavy(); void Dodge(); void Skill(); void ToggleLock();
     bool IsCharging() const { return bCharging; }
     float ChargeProgress() const;
+    int32 NormalWaveTargets() const { return 1+FMath::Clamp(PowerRank,0,3); }
     void NextEncounter();
     void ImpactFeedback(float Strength, const FVector& Position);
     double HitMarkerUntil = 0;

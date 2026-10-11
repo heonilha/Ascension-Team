@@ -30,8 +30,8 @@
 
 namespace Lab
 {
-    const TCHAR* Names[] = {TEXT("번개 반격"), TEXT("연격 마무리"), TEXT("넓은 파동"), TEXT("탐욕 · 폭발 회피"), TEXT("탐욕 · 파괴의 일격"), TEXT("빠른 파동"),TEXT("자동 번개 강화"),TEXT("회전 칼날 강화"),TEXT("강인한 성장")};
-    const TCHAR* Details[] = {TEXT("정확한 회피 후 반격 피해 추가 +15"), TEXT("일반 공격의 세 번째 타격 피해 +12"), TEXT("Q 스킬 반경 320 → 440"), TEXT("회피 폭발 피해 18 / 대가: 주변 적의 경계 확대"), TEXT("강공격 피해 +25 / 대가: 공격 후 빈틈 +0.45초"), TEXT("Q 스킬 재사용 대기시간 6초 → 4초"),TEXT("가까운 적 자동 공격 · 피해 +5 / 주기 단축"),TEXT("주변 적 자동 공격 · 피해 +3"),TEXT("직접 검 공격 피해 +3 / 체력 +15 회복")};
+    const TCHAR* Names[] = {TEXT("번개 반격"), TEXT("연격 마무리"), TEXT("넓은 파동"), TEXT("탐욕 · 폭발 회피"), TEXT("탐욕 · 파괴의 일격"), TEXT("빠른 파동"),TEXT("자동 번개 강화"),TEXT("회전 칼날 강화"),TEXT("검기 관통 강화")};
+    const TCHAR* Details[] = {TEXT("정확한 회피 후 반격 피해 추가 +15"), TEXT("일반 공격의 세 번째 타격 피해 +12"), TEXT("Q 스킬 반경 320 → 440"), TEXT("회피 폭발 피해 18 / 대가: 주변 적의 경계 확대"), TEXT("강공격 피해 +25 / 대가: 공격 후 빈틈 +0.45초"), TEXT("Q 스킬 재사용 대기시간 6초 → 4초"),TEXT("가까운 적 자동 공격 · 피해 +5 / 주기 단축"),TEXT("주변 적 자동 공격 · 피해 +3"),TEXT("일반 검기 대상 +1 (최대 4명) · 검 피해 +3 · 체력 +15 회복")};
     FCLItem Item(int32 Kind,int32 Tier) { FCLItem I; I.ID=FGuid::NewGuid(); I.Kind=Kind; I.Tier=Tier; return I; }
     FString ItemName(const FCLItem& I)
     {
@@ -303,7 +303,7 @@ void ACLHero::ResolveSwing()
         if(bHeavy) Damage*=1.f+ReleasedCharge;
         FActorSpawnParameters Params; Params.Owner=this;
         if(ACLBladeWave* Wave=GetWorld()->SpawnActor<ACLBladeWave>(GetActorLocation()+SwingDirection*45,SwingDirection.Rotation(),Params))
-        { Wave->Hero=this; Wave->Direction=SwingDirection; Wave->Damage=Damage; Wave->Radius=bHeavy?70+ReleasedCharge*40:55; Wave->Pierces=bHeavy?4+FMath::RoundToInt(ReleasedCharge*4):3; Wave->SetLifeSpan(bHeavy?1.6f:1.2f); }
+        { Wave->Hero=this; Wave->Direction=SwingDirection; Wave->Damage=Damage; Wave->Radius=bHeavy?70+ReleasedCharge*40:55; Wave->Pierces=bHeavy?4+FMath::RoundToInt(ReleasedCharge*4):NormalWaveTargets(); Wave->SetLifeSpan(bHeavy?1.6f:1.2f); }
         return;
     }
     bool Hit=false; FVector Contact;
@@ -677,6 +677,9 @@ void ACLBladeWave::Tick(float Delta)
     const FCollisionObjectQueryParams StaticObjects(ECC_WorldStatic);
     const bool Blocked=GetWorld()->SweepSingleByObjectType(Wall,Start,End,FQuat::Identity,StaticObjects,FCollisionShape::MakeSphere(15),Params);
     if(Blocked) End=Wall.Location;
+    struct FWaveContact { ACLEnemy* Enemy; float Entry; };
+    TArray<FWaveContact> Contacts;
+    const FVector Travel=(End-Start).GetSafeNormal(); const float Length=FVector::Dist(Start,End);
     for(TActorIterator<ACLEnemy> It(GetWorld());It;++It)
     {
         if(It->HP<=0 || HitEnemies.Contains(TWeakObjectPtr<ACLEnemy>(*It))) continue;
@@ -684,10 +687,19 @@ void ACLBladeWave::Tick(float Delta)
         FHitResult Occluder;
         if(FVector::DistSquared(Nearest,It->GetActorLocation())<=FMath::Square(Radius+32) && !GetWorld()->LineTraceSingleByObjectType(Occluder,Start,It->GetActorLocation(),StaticObjects,Params))
         {
-            HitEnemies.Add(TWeakObjectPtr<ACLEnemy>(*It)); const FVector Contact=It->GetActorLocation();
-            It->ReceiveHit(Damage,Direction); Hero->ImpactFeedback(3,Contact);
-            if(--Pierces<=0) { Destroy(); return; }
+            const FVector Offset=It->GetActorLocation()-Start;
+            const float Along=FVector::DotProduct(Offset,Travel);
+            const float SideSquared=FMath::Max(0.f,Offset.SizeSquared()-Along*Along);
+            const float Entry=FMath::Clamp(Along-FMath::Sqrt(FMath::Max(0.f,FMath::Square(Radius+32)-SideSquared)),0.f,Length);
+            Contacts.Add({*It,Entry});
         }
+    }
+    Contacts.Sort([](const FWaveContact& A,const FWaveContact& B) { return A.Entry==B.Entry?A.Enemy->GetUniqueID()<B.Enemy->GetUniqueID():A.Entry<B.Entry; });
+    for(const FWaveContact& Contact:Contacts)
+    {
+        ACLEnemy* Enemy=Contact.Enemy; if(!IsValid(Enemy) || Enemy->HP<=0) continue;
+        HitEnemies.Add(Enemy); Enemy->ReceiveHit(Damage,Direction); Hero->ImpactFeedback(3,Enemy->GetActorLocation());
+        if(--Pierces<=0) { Destroy(); return; }
     }
     SetActorLocation(End);
     const FColor Color=Radius>60?FColor(255,200,70):FColor::Cyan;
@@ -917,7 +929,7 @@ void AAscensionMode::Tick(float Delta)
             ACLBladeWave* TestWave=GetWorld()->SpawnActor<ACLBladeWave>(P->GetActorLocation(),FRotator::ZeroRotator);
             ACLEnemy* Behind=GetWorld()->SpawnActor<ACLEnemy>(P->GetActorLocation()+FVector(280,0,0),FRotator::ZeroRotator);
             if(Behind) Behind->Configure(0);
-            TestWave->Hero=P; TestWave->Damage=5; TestWave->Tick(.2f); TestWave->Tick(.01f);
+            TestWave->Hero=P; TestWave->Damage=5; TestWave->Pierces=3; TestWave->Tick(.2f); TestWave->Tick(.01f);
             Check(Target->HP==15 && Behind && Behind->HP==45 && TestWave->HitEnemies.Num()==2,TEXT("blade_wave_pierces_and_hits_each_once")); TestWave->Destroy();
             // Actual enemy displacement and post-hit pursuit are covered by VerifyCombat.
         }
@@ -1313,7 +1325,7 @@ void ACLHUD::DrawHUD()
     FString Owned=TEXT("보유 각성: "); if(P->Awakenings.IsEmpty()) Owned+=TEXT("없음");
     for(int32 I=0;I<P->Awakenings.Num();++I) Owned+=FString::Printf(TEXT("[%d] %s   "),I+1,Lab::Names[P->Awakenings[I]]);
     DrawText(Owned,FLinearColor::White,25,148);
-    DrawText(Mode && Mode->bSurvival?FString::Printf(TEXT("Lv %d · 경험치 %d/%d · 자동 번개 %d · 회전 칼날 %d · 검 강화 %d"),P->Level,P->Experience,P->ExperienceRequired(),P->LightningRank,P->BladeRank,P->PowerRank):TEXT("개발 중: 탑 등반 · 파티 · 멀티플레이"),FLinearColor(.7f,.8f,1.f),25,174);
+    DrawText(Mode && Mode->bSurvival?FString::Printf(TEXT("Lv %d · 경험치 %d/%d · 번개 %d · 칼날 %d · 검 강화 %d · 일반 검기 %d명"),P->Level,P->Experience,P->ExperienceRequired(),P->LightningRank,P->BladeRank,P->PowerRank,P->NormalWaveTargets()):TEXT("개발 중: 탑 등반 · 파티 · 멀티플레이"),FLinearColor(.7f,.8f,1.f),25,174);
     if(Mode && Mode->bVictory) DrawText(TEXT("탈출 성공! 장비를 지켰습니다 · R: 다시 시작"),FLinearColor::Green,Canvas->SizeX*.5f-225,Canvas->SizeY*.5f,nullptr,1.4f);
     if(Mode && Mode->bEncounterCleared) DrawText(TEXT("전투 완료 · 장비를 챙긴 뒤 N: 다음 전투"),FLinearColor::Yellow,Canvas->SizeX*.5f-170,Canvas->SizeY-45);
     if(Lab::Now(P)<P->HitMarkerUntil)
@@ -1339,7 +1351,8 @@ void ACLHUD::DrawHUD()
             int32 ID=P->PendingReplacement>=0?P->Awakenings[I]:P->Offers[I];
             FLinearColor Color=ID==3 || ID==4?FLinearColor(1,.55f,.1f):FLinearColor::White;
             DrawText(FString::Printf(TEXT("%d. %s"),I+1,Lab::Names[ID]),Color,35,300+I*55);
-            DrawText(Lab::Details[ID],Color,55,323+I*55);
+            const FString Detail=ID==8 && P->bLevelChoice?FString::Printf(TEXT("일반 검기 %d → %d명 · 검 피해 +3 · 체력 +15 회복%s"),P->NormalWaveTargets(),FMath::Min(4,P->NormalWaveTargets()+1),P->NormalWaveTargets()==4?TEXT(" (대상 수 최대)"):TEXT("")):FString(Lab::Details[ID]);
+            DrawText(Detail,Color,55,323+I*55);
         }
     }
 }
