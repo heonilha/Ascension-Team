@@ -109,6 +109,7 @@ public:
     UPROPERTY() TObjectPtr<UStaticMeshComponent> Body;
 private:
     void BeginTell(); void Strike();
+    UPROPERTY() TObjectPtr<UStaticMeshComponent> Sword;
     FVector Direction;
     int32 StrikeNumber = 0;
     bool bDashHit = false;

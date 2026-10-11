@@ -22,6 +22,7 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "Animation/AnimSequence.h"
 #include "Materials/MaterialInterface.h"
+#include "Materials/MaterialInstanceDynamic.h"
 #include "TimerManager.h"
 #include "Sound/SoundBase.h"
 
@@ -36,16 +37,23 @@ namespace Lab
         if(I.Kind==0) return I.Tier==2?TEXT("묵직한 검 (+8 피해)"):I.Tier==1?TEXT("예리한 검 (+4 피해)"):TEXT("기본 검");
         return I.Tier==1?TEXT("철제 방어구 (피해 -3)"):TEXT("기본 방어구");
     }
-    bool SetModel(ACharacter* Character,TArray<TObjectPtr<UAnimSequence>>& Clips)
+    bool SetModel(ACharacter* Character,TArray<TObjectPtr<UAnimSequence>>& Clips,bool Monster=false)
     {
-        USkeletalMesh* Model=LoadObject<USkeletalMesh>(nullptr,TEXT("/Game/Models/SharedKnightRig.SharedKnightRig"));
+        USkeletalMesh* Model=LoadObject<USkeletalMesh>(nullptr,Monster?TEXT("/Game/Models/UndeadSentinel/UndeadSentinelRig.UndeadSentinelRig"):TEXT("/Game/Models/SharedKnightRig.SharedKnightRig"));
         if(!Model) return false;
         USkeletalMeshComponent* Mesh=Character->GetMesh(); Mesh->SetSkeletalMeshAsset(Model); Mesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
         FBoxSphereBounds Bounds=Model->GetImportedBounds(); float Scale=180.f/FMath::Max(1.f,float(Bounds.BoxExtent.Z*2));
         Mesh->SetRelativeScale3D(FVector(Scale)); Mesh->SetRelativeRotation(FRotator(0,180,0));
         Mesh->SetRelativeLocation(FVector(0,0,-88-(Bounds.Origin.Z-Bounds.BoxExtent.Z)*Scale));
-        if(UMaterialInterface* Material=LoadObject<UMaterialInterface>(nullptr,TEXT("/Game/Models/M_SharedKnight.M_SharedKnight")))
+        if(UMaterialInterface* Material=LoadObject<UMaterialInterface>(nullptr,Monster?TEXT("/Game/Models/UndeadSentinel/M_UndeadSentinel.M_UndeadSentinel"):TEXT("/Game/Models/M_SharedKnight.M_SharedKnight")))
             for(int32 I=0;I<Mesh->GetNumMaterials();++I) Mesh->SetMaterial(I,Material);
+        if(Monster)
+        {
+            const TCHAR* MonsterPaths[]={TEXT("/Game/Models/UndeadSentinel/UndeadSentinelActions_Idle.UndeadSentinelActions_Idle"),TEXT("/Game/Models/UndeadSentinel/UndeadSentinelRun.UndeadSentinelRun"),TEXT("/Game/Models/UndeadSentinel/UndeadSentinelActions_Right_Hand_Sword_Slash.UndeadSentinelActions_Right_Hand_Sword_Slash")};
+            for(const TCHAR* Path:MonsterPaths) Clips.Add(LoadObject<UAnimSequence>(nullptr,Path));
+            int32 Loaded=0; for(const auto& Clip:Clips) if(Clip) ++Loaded;
+            UE_LOG(LogTemp,Display,TEXT("ASCENSION_MONSTER_MODEL_LOADED clips=%d/3"),Loaded); return Loaded==3;
+        }
         const TCHAR* Paths[]={TEXT("/Game/Models/SharedKnightActions_Idle.SharedKnightActions_Idle"),TEXT("/Game/Models/SharedKnightRun.SharedKnightRun"),TEXT("/Game/Models/SharedKnightActions_Right_Hand_Sword_Slash.SharedKnightActions_Right_Hand_Sword_Slash"),TEXT("/Game/Models/SharedKnightActions_Charged_Upward_Slash.SharedKnightActions_Charged_Upward_Slash"),TEXT("/Game/Models/SharedKnightActions_Roll_Dodge.SharedKnightActions_Roll_Dodge")};
         for(const TCHAR* Path:Paths) Clips.Add(LoadObject<UAnimSequence>(nullptr,Path));
         int32 Loaded=0; for(const auto& Clip:Clips) if(Clip) ++Loaded;
@@ -374,16 +382,31 @@ ACLEnemy::ACLEnemy()
     static ConstructorHelpers::FObjectFinder<UStaticMesh> Cube(TEXT("/Engine/BasicShapes/Cube.Cube"));
     Body=CreateDefaultSubobject<UStaticMeshComponent>(TEXT("EnemyProxy")); Body->SetupAttachment(RootComponent);
     Body->SetStaticMesh(Cube.Object); Body->SetRelativeScale3D(FVector(.6,.6,1.4)); Body->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+    Sword=CreateDefaultSubobject<UStaticMeshComponent>(TEXT("EnemySword")); Sword->SetupAttachment(RootComponent);
+    Sword->SetStaticMesh(Cube.Object); Sword->SetCollisionEnabled(ECollisionEnabled::NoCollision); Sword->SetVisibility(false);
 }
-void ACLEnemy::Configure(int32 K) { Kind=K; MaxHP=HP=K==2?150:K==1?70:50; Body->SetRelativeScale3D(K==2?FVector(.9,.9,1.8):K==1?FVector(.5,.8,1.3):FVector(.6,.6,1.4)); }
+void ACLEnemy::Configure(int32 K)
+{
+    Kind=K; MaxHP=HP=K==2?150:K==1?70:50; Body->SetRelativeScale3D(K==2?FVector(.9,.9,1.8):K==1?FVector(.5,.8,1.3):FVector(.6,.6,1.4));
+    Sword->SetVisibility(K!=1 && GetMesh()->GetSkeletalMeshAsset()!=nullptr);
+    if(USkeletalMesh* Model=GetMesh()->GetSkeletalMeshAsset())
+    {
+        const FBoxSphereBounds Bounds=Model->GetImportedBounds();
+        const float Scale=(K==2?220.f:K==1?175.f:185.f)/FMath::Max(1.f,float(Bounds.BoxExtent.Z*2));
+        GetMesh()->SetRelativeScale3D(FVector(Scale)); GetMesh()->SetRelativeLocation(FVector(0,0,-88-(Bounds.Origin.Z-Bounds.BoxExtent.Z)*Scale));
+        for(int32 I=0;I<GetMesh()->GetNumMaterials();++I)
+            if(UMaterialInstanceDynamic* Material=GetMesh()->CreateDynamicMaterialInstance(I)) Material->SetVectorParameterValue(TEXT("Tint"),K==2?FLinearColor(.7f,.6f,1.f):K==1?FLinearColor(1.f,.55f,.4f):FLinearColor(1.f,.95f,.8f));
+    }
+}
 void ACLEnemy::BeginPlay()
 {
-    Super::BeginPlay(); if(Lab::SetModel(this,Clips)) Body->SetVisibility(false);
+    Super::BeginPlay(); if(Lab::SetModel(this,Clips,true)) { Body->SetVisibility(false); Lab::AttachSword(this,Sword); Configure(Kind); }
 }
 void ACLEnemy::BeginTell()
 {
     ACLHero* P=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0)); if(!P || P->HP<=0) return;
     Phase=1; Direction=(P->GetActorLocation()-GetActorLocation()).GetSafeNormal2D(); SetActorRotation(Direction.Rotation());
+    VisualState=-1;
     Deadline=Lab::Now(this)+(Kind==1?.9:StrikeNumber==1?.45:.6); GetCharacterMovement()->StopMovementImmediately();
 }
 void ACLEnemy::Strike()
@@ -398,10 +421,11 @@ void ACLEnemy::Tick(float Delta)
 {
     Super::Tick(Delta); ACLHero* P=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0)); if(HP<=0 || !P || P->HP<=0) { GetCharacterMovement()->StopMovementImmediately(); return; }
     const double T=Lab::Now(this); FVector To=P->GetActorLocation()-GetActorLocation();
-    Lab::Visual(this,Clips,Phase==2?1:GetVelocity().SizeSquared2D()>100?1:0,VisualState);
+    Lab::Visual(this,Clips,Phase==1 && Kind!=1?2:Phase==2?1:GetVelocity().SizeSquared2D()>100?1:0,VisualState,Phase==1 && Kind!=1?(StrikeNumber==1?.6f:.75f):0);
+    Lab::AlignBodyForward(GetMesh());
     if(T<DamageTextUntil) DrawDebugString(GetWorld(),DamageTextOrigin+FVector(0,0,130+(1-(DamageTextUntil-T)/.65)*65),FString::Printf(TEXT("-%.0f"),LastDamage),nullptr,FColor(255,220,100),0,true,1.3f);
     FColor C=Kind==2?FColor::Purple:Kind==1?FColor::Orange:FColor::Red;
-    DrawDebugString(GetWorld(),GetActorLocation()+FVector(0,0,110),FString::Printf(TEXT("%s %.0f/%.0f"),Kind==2?TEXT("엘리트"):Kind==1?TEXT("돌진병"):TEXT("검병"),HP,MaxHP),nullptr,C,0,true);
+    DrawDebugString(GetWorld(),GetActorLocation()+FVector(0,0,Kind==2?150:110),FString::Printf(TEXT("%s %.0f/%.0f"),Kind==2?TEXT("망령 지휘관"):Kind==1?TEXT("폭주 망령"):TEXT("망령 검병"),HP,MaxHP),nullptr,C,0,true);
     DrawDebugBox(GetWorld(),GetActorLocation(),Kind==2?FVector(45,45,90):FVector(30,40,70),GetActorQuat(),C,false,-1,0,3);
     if(bFrozenForView) return;
     if(Phase==0)
@@ -503,10 +527,12 @@ void AAscensionMode::Tick(float Delta)
             for(TActorIterator<ACLEnemy> It(GetWorld());It;++It)
             {
                 const FVector At=It->GetActorLocation(); Safe&=FVector::Dist2D(At,P->GetActorLocation())>=440;
+                const USkeletalMesh* Model=It->GetMesh()->GetSkeletalMeshAsset();
+                Safe&=Model && Model->GetName()==TEXT("UndeadSentinelRig") && !It->Body->IsVisible();
                 for(const FVector& Other:Positions) Safe&=FVector::Dist2D(At,Other)>=160;
                 Positions.Add(At); Guards+=It->Kind==0; Chargers+=It->Kind==1; Elites+=It->Kind==2;
             }
-            Check(Positions.Num()==7 && Guards>0 && Chargers>0 && Elites==1 && Safe,TEXT("random_spawn_count_mix_spacing"));
+            Check(Positions.Num()==7 && Guards>0 && Chargers>0 && Elites==1 && Safe,TEXT("random_spawn_count_mix_spacing_monster_model"));
             if(Seed==100) First=Positions;
             if(Seed==101) Check(Positions!=First,TEXT("random_seed_changes_layout"));
         }
@@ -568,7 +594,15 @@ void AAscensionMode::Tick(float Delta)
         {
             P->SetActorLocation(FVector(-750,0,100)); P->Controller->SetControlRotation(FRotator(-30,0,0));
             P->DisableInput(Cast<APlayerController>(P->Controller)); P->SetActorRotation(FRotator::ZeroRotator);
-            for(TActorIterator<ACLEnemy> It(GetWorld());It;++It) { It->bFrozenForView=true; It->GetCharacterMovement()->StopMovementImmediately(); }
+            for(TActorIterator<ACLEnemy> It(GetWorld());It;++It)
+            {
+                It->bFrozenForView=true; It->GetCharacterMovement()->StopMovementImmediately();
+                if(FParse::Param(FCommandLine::Get(),TEXT("AscensionMonsterView")))
+                {
+                    const FVector Offset=It->Kind==2?FVector(750,140,0):It->Kind==1?FVector(500,210,0):FVector(450,-220,0);
+                    It->SetActorLocation(P->GetActorLocation()+Offset); It->SetActorRotation((P->GetActorLocation()-It->GetActorLocation()).Rotation());
+                }
+            }
             NextCheck=T+2; VerifyStage=1;
         }
         else if(VerifyStage==1)
