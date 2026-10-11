@@ -33,3 +33,5 @@ BladeWave.png 실제 렌더링에서 이동 중 청록색 검기와 체력/경�
 2026-10-11 일반 검기 대상 수와 관통 강화: CombatFeel.log에서 먼 적을 먼저 생성해도 가까운 적만 피해 20을 받고 기본 검기가 소멸함을 확인했다. 실제 레벨업 3번 선택 후 검기 강화 1단계·대상 수 2·장비 ID 유지·세계 재개 확인. 강화 검기가 앞의 두 적에게 각각 피해 23을 주고 세 번째 적은 맞히지 않는 검사 PASS. 성장 사망 초기화와 새 생명의 기본 대상 수 1 검사도 PASS. 생존 관통 회귀의 시험용 검기는 관통 수 3을 명시해 기본 공격과 구분했다.
 
 2026-10-11 긴 충전 범위 검증: 최종 빌드 성공. CombatFeel.log ASCENSION_COMBAT_VERIFY PASS. 3초 실제 충전 상한·최대 검기 피해105/반경230/관통10, 반충전 시간값을 설정한 발사 피해70/반경150 확인. 판정 폭 바깥 190cm 옆 적은 반충전에 맞지 않고 완충전에는 피해105를 받는 검사 PASS. 기존 실제 추적·피격 회복·이동 동작·충전 취소 및 생명 초기화 검사를 함께 통과했다. Survival.log ASCENSION_SURVIVAL_VERIFY PASS(성장·보조 공격·장비 ID·보스·탈출·사망/재시작 회귀). VerifyCombat -View ASCENSION_COMBAT_FEEL_VIEW PASS: 이동 중 손/발 변화와 정면, 충전 단계, 입력 방향의 전신 회피 확인. Meshy 추가 사용0.
+
+시각 기록: ChargingWave.png(초기 충전), ChargingWaveMid.png(중간 충전), ChargingWaveFull.png(3초 최대·3배 피해·3.3배 폭), ChargedRelease.png(넓은 주황 검기·밝은 내부 띠) 직접 확인. MovingSlashEarly/MovingSlash와 WaveRoll도 최신 실행으로 갱신했다. 이미지와 원본 로그는 대응하며 로그 파일은 Git 제외 규칙을 유지한다.
