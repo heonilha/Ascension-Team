@@ -51,6 +51,7 @@ public:
     FVector Direction = FVector::ForwardVector;
     float Damage = 20, Speed = 1400, Radius = 55;
     int32 Pierces = 1;
+    float Charge = 0;
     TWeakObjectPtr<ACLHero> Hero;
     TSet<TWeakObjectPtr<ACLEnemy>> HitEnemies;
 };

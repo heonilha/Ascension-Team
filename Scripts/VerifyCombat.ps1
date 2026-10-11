@@ -10,7 +10,7 @@ if ($View) {
     $taskViewProcess = Start-Process -FilePath $taskViewExe -ArgumentList $taskArguments -WindowStyle Hidden -PassThru
     if (-not $taskViewProcess.WaitForExit(60000)) { Stop-Process -Id $taskViewProcess.Id; throw 'Combat view timed out.' }
     if ($taskViewProcess.ExitCode -ne 0 -or -not (Select-String -LiteralPath $taskViewLog -SimpleMatch 'ASCENSION_COMBAT_FEEL_VIEW PASS')) { throw 'Combat view verification failed.' }
-    foreach ($taskName in @('MovingSlashEarly','MovingSlash','ChargingWave','ChargedRelease','WaveRoll')) {
+    foreach ($taskName in @('MovingSlashEarly','MovingSlash','ChargingWave','ChargingWaveMid','ChargingWaveFull','ChargedRelease','WaveRoll')) {
         Copy-Item -LiteralPath "$taskBuild\Saved\$taskName.png" -Destination (Join-Path (Split-Path -Parent $taskLog) "$taskName.png") -Force
     }
     return

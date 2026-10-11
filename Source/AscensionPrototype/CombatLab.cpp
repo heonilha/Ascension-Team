@@ -216,7 +216,12 @@ void ACLHero::Tick(float Delta)
     if(bCharging)
     {
         const FVector Center=GetActorLocation()+FVector(0,0,30)+GetActorForwardVector()*50;
-        DrawDebugSphere(GetWorld(),Center,15+ChargeProgress()*35,16,FColor::Orange,false,-1,0,2);
+        const float Charge=ChargeProgress(),Width=70+Charge*160;
+        const FColor Color=FLinearColor::LerpUsingHSV(FLinearColor(1,.25f,.02f),FLinearColor(1,.95f,.35f),Charge).ToFColor(true);
+        DrawDebugSphere(GetWorld(),Center,15+Charge*55,20,Color,false,-1,0,2+Charge*3);
+        const FVector Side=FRotationMatrix(FRotator(0,GetControlRotation().Yaw,0)).GetUnitAxis(EAxis::Y);
+        DrawDebugLine(GetWorld(),Center-Side*Width,Center+Side*Width,Color,false,-1,0,2+Charge*4);
+        for(int32 I=0;I<8;++I) { const FVector Ray=FVector(1,0,.35f).GetSafeNormal().RotateAngleAxis(float(T*160)+I*45,FVector::UpVector); DrawDebugLine(GetWorld(),Center+Ray*(75+Charge*50),Center+Ray*(20+Charge*15),Color,false,-1,0,2); }
     }
     // Slash clips have their own forward axis too; keep the visible torso on
     // the actor's locked swing direction throughout normal and heavy attacks.
@@ -266,7 +271,7 @@ void ACLHero::Tick(float Delta)
     if(!bHasModel) Sword->SetRelativeRotation(FRotator(0,Swing,0));
 }
 void ACLHero::Attack() { StartAttack(false); }
-float ACLHero::ChargeProgress() const { return bCharging?FMath::Clamp(float((Lab::Now(this)-ChargeStart)/1.2),0.f,1.f):0.f; }
+float ACLHero::ChargeProgress() const { return bCharging?FMath::Clamp(float((Lab::Now(this)-ChargeStart)/3.0),0.f,1.f):0.f; }
 void ACLHero::Heavy()
 {
     if(!UsesBladeWave()) { StartAttack(true); return; }
@@ -300,10 +305,10 @@ void ACLHero::ResolveSwing()
     if(bHeavy && HasAwakening(4)) Damage+=25;
     if(UsesBladeWave())
     {
-        if(bHeavy) Damage*=1.f+ReleasedCharge;
+        if(bHeavy) Damage*=1.f+ReleasedCharge*2.f;
         FActorSpawnParameters Params; Params.Owner=this;
         if(ACLBladeWave* Wave=GetWorld()->SpawnActor<ACLBladeWave>(GetActorLocation()+SwingDirection*45,SwingDirection.Rotation(),Params))
-        { Wave->Hero=this; Wave->Direction=SwingDirection; Wave->Damage=Damage; Wave->Radius=bHeavy?70+ReleasedCharge*40:55; Wave->Pierces=bHeavy?4+FMath::RoundToInt(ReleasedCharge*4):NormalWaveTargets(); Wave->SetLifeSpan(bHeavy?1.6f:1.2f); }
+        { Wave->Hero=this; Wave->Direction=SwingDirection; Wave->Damage=Damage; Wave->Radius=bHeavy?70+ReleasedCharge*160:55; Wave->Pierces=bHeavy?4+FMath::RoundToInt(ReleasedCharge*6):NormalWaveTargets(); Wave->Charge=bHeavy?ReleasedCharge:0; Wave->SetLifeSpan(bHeavy?1.2f+ReleasedCharge*.8f:1.2f); }
         return;
     }
     bool Hit=false; FVector Contact;
@@ -707,7 +712,12 @@ void ACLBladeWave::Tick(float Delta)
     {
         const FVector A=End-Direction.RotateAngleAxis(-65+130.f*I/12,FVector::UpVector)*Radius;
         const FVector B=End-Direction.RotateAngleAxis(-65+130.f*(I+1)/12,FVector::UpVector)*Radius;
-        DrawDebugLine(GetWorld(),A,B,Color,false,.05f,0,7);
+        DrawDebugLine(GetWorld(),A,B,Color,false,.05f,0,7+Charge*6);
+        if(Radius>60)
+        {
+            const FVector InnerA=End+(A-End)*.82f,InnerB=End+(B-End)*.82f;
+            DrawDebugLine(GetWorld(),InnerA,InnerB,FColor(255,245,210),false,.05f,0,3+Charge*4);
+        }
     }
     if(Blocked) Destroy();
 }
@@ -809,18 +819,36 @@ void AAscensionMode::Tick(float Delta)
         {
             int32 Waves=0; for(TActorIterator<ACLBladeWave> It(GetWorld());It;++It) { ++Waves; It->Destroy(); }
             Check(P->bResolved && Waves==1,TEXT("slash_fires_one_delayed_blade_wave"));
+            // Spawn the far enemy first so actor iteration order cannot mask
+            // an incorrect single-target collision order.
+            ACLEnemy* Far=GetWorld()->SpawnActor<ACLEnemy>(P->GetActorLocation()+FVector(340,0,0),FRotator::ZeroRotator);
+            ACLEnemy* Near=GetWorld()->SpawnActor<ACLEnemy>(P->GetActorLocation()+FVector(130,0,0),FRotator::ZeroRotator);
+            ACLEnemy* Middle=GetWorld()->SpawnActor<ACLEnemy>(P->GetActorLocation()+FVector(250,0,0),FRotator::ZeroRotator);
+            if(!Far || !Near || !Middle) { Check(false,TEXT("piercing_fixture_spawn")); FPlatformMisc::RequestExitWithStatus(false,1); return; }
+            for(ACLEnemy* Enemy:{Far,Near,Middle}) { Enemy->bFrozenForView=true; Enemy->HP=500; }
+            ACLBladeWave* Single=GetWorld()->SpawnActor<ACLBladeWave>(P->GetActorLocation(),FRotator::ZeroRotator); Single->Hero=P; Single->Tick(.35f);
+            Check(Single->IsActorBeingDestroyed() && Single->HitEnemies.Num()==1 && Near->HP==480 && Middle->HP==500 && Far->HP==500,TEXT("base_wave_hits_only_first_enemy_in_path"));
+            Near->HP=500;
+            const FGuid Gear=P->Weapon.ID; const int32 OldLevel=P->Level,OldExperience=P->Experience;
+            P->GainExperience(P->ExperienceRequired()); P->Choose(2);
+            Check(P->PowerRank==1 && P->NormalWaveTargets()==2 && !UGameplayStatics::IsGamePaused(this) && P->Weapon.ID==Gear,TEXT("levelup_unlocks_second_normal_target"));
+            P->ResolveSwing(); ACLBladeWave* Upgraded=nullptr; for(TActorIterator<ACLBladeWave> It(GetWorld());It;++It) Upgraded=*It;
+            if(Upgraded) { Upgraded->Tick(.35f); Check(Upgraded->IsActorBeingDestroyed() && Upgraded->HitEnemies.Num()==2 && Near->HP==477 && Middle->HP==477 && Far->HP==500,TEXT("upgraded_wave_hits_two_targets_then_stops")); }
+            else Check(false,TEXT("upgraded_wave_spawn"));
+            for(ACLEnemy* Enemy:{Far,Near,Middle}) Enemy->Destroy();
+            P->PowerRank=0; P->Level=OldLevel; P->Experience=OldExperience;
             P->Heavy(); VerifyStage=6; NextCheck=T+.6;
         }
         else if(VerifyStage==6)
         {
             int32 Waves=0; for(TActorIterator<ACLBladeWave> It(GetWorld());It;++It) ++Waves;
-            Check(P->IsCharging() && P->ChargeProgress()>.45f && P->ChargeProgress()<.65f && P->VisualState==3 && Waves==0,TEXT("heavy_holds_windup_without_firing"));
+            Check(P->IsCharging() && P->ChargeProgress()>.15f && P->ChargeProgress()<.3f && P->VisualState==3 && Waves==0,TEXT("heavy_holds_windup_without_firing"));
             const double Started=P->AttackStart; P->Attack(); Check(P->AttackStart==Started,TEXT("normal_attack_cannot_interrupt_charge"));
-            VerifyStage=7; NextCheck=T+.7;
+            VerifyStage=7; NextCheck=T+2.5;
         }
         else if(VerifyStage==7)
         {
-            Check(P->ChargeProgress()==1.f,TEXT("charge_caps_at_1200ms"));
+            Check(P->ChargeProgress()==1.f,TEXT("charge_caps_at_3000ms"));
             P->Controller->SetControlRotation(FRotator(-30,90,0)); P->ReleaseHeavy();
             Check(!P->IsCharging() && !P->bResolved && FVector::DotProduct(P->SwingDirection,FVector::RightVector)>.99f,TEXT("heavy_release_uses_current_camera_aim"));
             VerifyStage=8; NextCheck=T+.4;
@@ -828,8 +856,8 @@ void AAscensionMode::Tick(float Delta)
         else if(VerifyStage==8)
         {
             int32 Waves=0; bool Charged=false;
-            for(TActorIterator<ACLBladeWave> It(GetWorld());It;++It) { ++Waves; Charged=It->Damage==70 && It->Radius==110 && It->Pierces==8; It->Destroy(); }
-            Check(P->bResolved && Waves==1 && Charged,TEXT("full_charge_fires_single_70_damage_wave"));
+            for(TActorIterator<ACLBladeWave> It(GetWorld());It;++It) { ++Waves; Charged=It->Damage==105 && It->Radius==230 && It->Pierces==10; It->Destroy(); }
+            Check(P->bResolved && Waves==1 && Charged,TEXT("full_charge_fires_single_105_damage_230_radius_wave"));
             VerifyStage=9; NextCheck=T+.6;
         }
         else if(VerifyStage==9)
@@ -852,12 +880,33 @@ void AAscensionMode::Tick(float Delta)
             Check(VerifyEnemy->Phase==1 && FMath::IsNearlyEqual(float(VerifyEnemy->StaggerUntil-T),.04f),TEXT("boss_resists_stagger"));
             P->Heavy(); P->ToggleInventory(); P->ReleaseHeavy(); Check(!P->IsCharging() && P->bInventoryOpen && P->bResolved,TEXT("inventory_cancels_charge_without_shot")); P->ToggleInventory();
             P->Heavy(); P->GainExperience(25); P->ReleaseHeavy(); Check(!P->IsCharging() && P->bLevelChoice && P->bResolved,TEXT("levelup_cancels_charge_while_paused")); P->Choose(0);
-            VerifyStage=12; NextCheck=T+.1;
+            P->Heavy(); P->ChargeStart=T-1.5; P->ReleaseHeavy(); VerifyStage=13; NextCheck=T+.4;
+        }
+        else if(VerifyStage==13)
+        {
+            int32 Waves=0; bool Partial=false;
+            for(TActorIterator<ACLBladeWave> It(GetWorld());It;++It)
+            {
+                ++Waves; Partial=FMath::IsNearlyEqual(It->Damage,70.f,.05f) && FMath::IsNearlyEqual(It->Radius,150.f,.05f);
+                const FVector Sideways=FVector::CrossProduct(FVector::UpVector,It->Direction);
+                ACLEnemy* Side=GetWorld()->SpawnActor<ACLEnemy>(It->GetActorLocation()+It->Direction*80+Sideways*190,FRotator::ZeroRotator);
+                if(Side)
+                {
+                    Side->bFrozenForView=true; Side->HP=500;
+                    const FVector At=It->GetActorLocation(); It->Tick(.15f); Check(Side->HP==500,TEXT("half_charge_does_not_hit_outside_its_width"));
+                    ACLBladeWave* Wide=GetWorld()->SpawnActor<ACLBladeWave>(At,FRotator::ZeroRotator); Wide->Hero=P; Wide->Direction=It->Direction; Wide->Radius=230; Wide->Damage=105; Wide->Tick(.15f);
+                    Check(Side->HP==395,TEXT("full_charge_width_hits_additional_side_enemy")); Wide->Destroy(); Side->Destroy();
+                }
+                else Check(false,TEXT("charge_width_fixture_spawn"));
+                It->Destroy(); break;
+            }
+            Check(Waves==1 && Partial,TEXT("half_charge_has_intermediate_damage_and_width"));
+            VerifyStage=12; NextCheck=T+.6;
         }
         else if(VerifyStage==12)
         {
-            P->Heavy(); P->ReceiveHit(10000); P->ReleaseHeavy(); Check(!P->IsCharging() && P->HP==0,TEXT("death_cancels_charge"));
-            P->ResetLife(); Check(!P->IsCharging() && P->HP==100 && P->ReleasedCharge==0,TEXT("reset_clears_charge_state"));
+            P->PowerRank=2; P->Heavy(); P->ReceiveHit(10000); P->ReleaseHeavy(); Check(!P->IsCharging() && P->HP==0 && P->PowerRank==0,TEXT("death_cancels_charge_and_piercing_growth"));
+            P->ResetLife(); Check(!P->IsCharging() && P->HP==100 && P->ReleasedCharge==0 && P->NormalWaveTargets()==1,TEXT("reset_clears_charge_and_restores_single_target"));
             UE_LOG(LogTemp,Display,TEXT("ASCENSION_COMBAT_VERIFY %s"),bFailed?TEXT("FAIL"):TEXT("PASS")); FPlatformMisc::RequestExitWithStatus(false,bFailed?1:0);
         }
         return;
@@ -895,7 +944,9 @@ void AAscensionMode::Tick(float Delta)
             FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir()/TEXT("MovingSlash.png"),true,false); VerifyStage=3; NextCheck=T+.6;
         }
         else if(VerifyStage==3) { P->ConsumeMovementInputVector(); P->GetCharacterMovement()->StopMovementImmediately(); P->Heavy(); VerifyStage=4; NextCheck=T+.85; }
-        else if(VerifyStage==4) { FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir()/TEXT("ChargingWave.png"),true,false); VerifyStage=5; NextCheck=T+.4; }
+        else if(VerifyStage==4) { FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir()/TEXT("ChargingWave.png"),true,false); VerifyStage=11; NextCheck=T+1; }
+        else if(VerifyStage==11) { FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir()/TEXT("ChargingWaveMid.png"),true,false); VerifyStage=12; NextCheck=T+1.3; }
+        else if(VerifyStage==12) { FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir()/TEXT("ChargingWaveFull.png"),true,false); VerifyStage=5; NextCheck=T+.1; }
         else if(VerifyStage==5) { P->ReleaseHeavy(); VerifyStage=6; NextCheck=T+.4; }
         else if(VerifyStage==6) { FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir()/TEXT("ChargedRelease.png"),true,false); VerifyStage=7; NextCheck=T+1; }
         else if(VerifyStage==7) { VerifyPosition=P->GetActorLocation(); P->Dodge(); VerifyStage=8; NextCheck=T+.3; }
@@ -1314,11 +1365,13 @@ void ACLHUD::DrawHUD()
     DrawText(Mode && Mode->bSurvival?TEXT("WASD 이동 · 좌클릭 검기 · 우클릭 누르기: 충전 / 놓기: 발사 · Space 회피"):TEXT("WASD 이동 · 마우스 시점 · 좌클릭 검 공격 · 우클릭 강공격 · Space 회피"),FLinearColor::White,25,74);
     if(P->IsCharging())
     {
-        const float X=Canvas->SizeX*.5f-100,Y=Canvas->SizeY*.5f+65;
-        DrawRect(FLinearColor(0,0,0,.85f),X-8,Y-23,216,43);
-        DrawText(P->ChargeProgress()>=1?TEXT("최대 충전 · 놓으면 발사"):TEXT("검기 충전 중 · 놓으면 발사"),FLinearColor(1,.7f,.2f),X,Y-20);
-        DrawRect(FLinearColor(.2f,.15f,.08f),X,Y+4,200,8);
-        DrawRect(FLinearColor(1,.6f,.1f),X,Y+4,200*P->ChargeProgress(),8);
+        const float X=Canvas->SizeX*.5f-145,Y=Canvas->SizeY*.5f+65,Charge=P->ChargeProgress();
+        DrawRect(FLinearColor(0,0,0,.85f),X-8,Y-45,306,69);
+        DrawText(Charge>=1?TEXT("최대 충전 · 놓으면 발사"):TEXT("검기 충전 중 · 놓으면 발사"),FLinearColor(1,.8f,.2f),X,Y-42);
+        DrawText(FString::Printf(TEXT("%.1f / 3.0초 · 피해 %.1f배 · 폭 %.1f배"),Charge*3,1+Charge*2,(70+Charge*160)/70),FLinearColor::White,X,Y-20);
+        DrawRect(FLinearColor(.2f,.15f,.08f),X,Y+4,290,10);
+        DrawRect(FLinearColor(1,.35f+Charge*.55f,.1f),X,Y+4,290*Charge,10);
+        for(int32 I=1;I<3;++I) DrawLine(X+290.f*I/3,Y+4,X+290.f*I/3,Y+14,FLinearColor::White,1);
     }
     DrawText(Mode && Mode->bSurvival?TEXT("Tab 락온 · Q 스킬 · E 획득/제단/탈출 · I 가방 · R 새 생명"):TEXT("Tab 락온 · Q 스킬 · E 획득/제단 · I 가방 · N 다음 전투 · R 다시 시작"),FLinearColor::White,25,97);
     DrawText(P->Notice,FLinearColor::Yellow,25,123);
