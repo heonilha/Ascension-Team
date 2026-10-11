@@ -3,7 +3,9 @@ param(
     [string]$Name = 'SharedKnight',
     [string]$TaskId,
     [ValidateSet('text-to-3d','rigging','animations')][string]$Kind = 'text-to-3d',
-    [int[]]$AnimationIds
+    [int[]]$AnimationIds,
+    [string]$Prompt,
+    [string]$TexturePrompt
 )
 $ErrorActionPreference = 'Stop'
 if ($Name -notmatch '^[A-Za-z0-9_-]+$') { throw 'Use a simple asset name.' }
@@ -41,10 +43,12 @@ try {
                 mode='preview'; ai_model='meshy-6-lite'; should_remesh=$true; target_polycount=12000; pose_mode='t-pose'; target_formats=@('fbx','glb');
                 prompt='A single stylized dark fantasy humanoid dungeon adventurer for a third person action game. Clear athletic human proportions, simple fitted leather tunic with a steel breastplate, small shoulder plates, trousers, boots and gloves. Uncovered face, short hair. Full body neutral T pose, arms straight out, feet apart, fingers and limbs separated. No weapon, no shield, no cape, no robe, no skirt, no ground base, no accessories, no scenery. Clean readable game silhouette, medium low polygon detail, suitable for automatic skeleton rigging.'
             }
+            if ($Prompt) { $taskBody.prompt = $Prompt }
         } elseif ($Action -eq 'Refine') {
             if ($TaskId -notmatch '^[A-Za-z0-9_-]+$') { throw 'Invalid preview ID.' }
             $taskEndpoint = '/openapi/v2/text-to-3d'
             $taskBody = @{mode='refine';preview_task_id=$TaskId;ai_model='meshy-6-lite';enable_pbr=$true;texture_resolution='2k';target_formats=@('fbx','glb');texture_prompt='Stylized dark fantasy adventurer. Muted dark brown fitted leather, worn steel armor, charcoal trousers, practical boots. Clear readable surfaces, subtle cyan fabric accent, no painted lighting. No logos or text.'}
+            if ($TexturePrompt) { $taskBody.texture_prompt = $TexturePrompt }
         } elseif ($Action -eq 'Animation') {
             if ($TaskId -notmatch '^[A-Za-z0-9_-]+$' -or $AnimationIds.Count -lt 1 -or $AnimationIds.Count -gt 10) { throw 'Invalid animation request.' }
             $taskEndpoint='/openapi/v1/animations'
