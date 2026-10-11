@@ -451,7 +451,7 @@ void ACLHero::UseAltar()
     for(TActorIterator<ACLDrop> It(GetWorld());It;++It)
     {
         float D=FVector::DistSquared(GetActorLocation(),It->GetActorLocation());
-        if(!It->Items.IsEmpty() && D<Best && Lab::Clear(this,*It)) { Nearest=*It; Best=D; }
+        if(!It->IsHidden() && !It->Items.IsEmpty() && D<Best && Lab::Clear(this,*It)) { Nearest=*It; Best=D; }
     }
     if(Nearest) { TakeItem(Nearest); return; }
     if(FVector::Dist2D(GetActorLocation(),FVector(650,650,0))>180) { Notice=TEXT("엘리트 근처의 금색 제단으로 이동한 뒤 E를 누르세요."); return; }
@@ -498,7 +498,7 @@ void ACLHero::EquipSelected()
 }
 bool ACLHero::TakeItem(ACLDrop* Drop)
 {
-    if(HP<=0 || !IsValid(Drop) || Drop->Items.IsEmpty() || FVector::DistSquared(GetActorLocation(),Drop->GetActorLocation())>FMath::Square(200.f) || !Lab::Clear(this,Drop)) return false;
+    if(HP<=0 || !IsValid(Drop) || Drop->IsHidden() || Drop->Items.IsEmpty() || FVector::DistSquared(GetActorLocation(),Drop->GetActorLocation())>FMath::Square(200.f) || !Lab::Clear(this,Drop)) return false;
     if(Inventory.Num()>=12) { Notice=TEXT("가방이 가득 찼습니다. 장비를 더 가져올 수 없습니다."); return false; }
     FCLItem Item=Drop->Items[0]; Inventory.Add(Item); Drop->Items.RemoveAt(0);
     Notice=FString::Printf(TEXT("획득: %s / I: 가방 열기 / 위·아래: 선택 / Enter: 장착"),*Lab::ItemName(Item));
@@ -665,10 +665,13 @@ ACLDrop::ACLDrop()
     UStaticMeshComponent* Mesh=CreateDefaultSubobject<UStaticMeshComponent>(TEXT("DropBag")); SetRootComponent(Mesh);
     static ConstructorHelpers::FObjectFinder<UStaticMesh> Cube(TEXT("/Engine/BasicShapes/Cube.Cube"));
     Mesh->SetStaticMesh(Cube.Object); Mesh->SetRelativeScale3D(FVector(.5,.4,.4)); Mesh->SetCollisionEnabled(ECollisionEnabled::NoCollision); InitialLifeSpan=180;
+    // Equipment drops are temporarily hidden while the combat demo is refined.
+    SetActorHiddenInGame(true);
 }
 void ACLDrop::Tick(float Delta)
 {
     Super::Tick(Delta);
+    if(IsHidden()) return;
     DrawDebugBox(GetWorld(),GetActorLocation(),FVector(27,22,22),FColor::Yellow,false,-1,0,3);
     DrawDebugString(GetWorld(),GetActorLocation()+FVector(0,0,50),FString::Printf(TEXT("장비 가방 / E / %d개"),Items.Num()),nullptr,FColor::Yellow,0,true);
 }
@@ -713,8 +716,8 @@ void ACLBladeWave::Tick(float Delta)
     const FColor Color=Radius>60?FColor(255,200,70):FColor::Cyan;
     for(int32 I=0;I<12;++I)
     {
-        const FVector A=End-Direction.RotateAngleAxis(-65+130.f*I/12,FVector::UpVector)*Radius;
-        const FVector B=End-Direction.RotateAngleAxis(-65+130.f*(I+1)/12,FVector::UpVector)*Radius;
+        const FVector A=End+Direction.RotateAngleAxis(-65+130.f*I/12,FVector::UpVector)*Radius;
+        const FVector B=End+Direction.RotateAngleAxis(-65+130.f*(I+1)/12,FVector::UpVector)*Radius;
         DrawDebugLine(GetWorld(),A,B,Color,false,.05f,0,7+Charge*6);
         if(Radius>60)
         {
@@ -760,7 +763,7 @@ void AAscensionMode::Tick(float Delta)
     {
         bEncounterCleared=true;
         if(ACLHero* Hero=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0)); Hero && Hero->HP>0)
-        { Hero->HP=FMath::Min(100.f,Hero->HP+20); if(Hero->Offers.IsEmpty()) Hero->Notice=TEXT("전투 완료! 체력 +20 / 장비를 챙기고 N: 다음 전투"); }
+        { Hero->HP=FMath::Min(100.f,Hero->HP+20); if(Hero->Offers.IsEmpty()) Hero->Notice=TEXT("전투 완료! 체력 +20 / N: 다음 전투"); }
     }
     DrawDebugCircle(GetWorld(),FVector(650,650,8),100,32,FColor::Yellow,false,-1,0,4,FVector::ForwardVector,FVector::RightVector,false);
     DrawDebugString(GetWorld(),FVector(650,650,90),TEXT("각성 제단 / E / 생명당 3회"),nullptr,FColor::Yellow,0,true);
@@ -1232,6 +1235,10 @@ void AAscensionMode::Tick(float Delta)
         P->ResetLife(); Check(P->HP==100 && P->LifeID!=PreviousLife && P->Awakenings.IsEmpty(),TEXT("fresh_life_identity"));
         if(IsValid(DeathBag))
         {
+            P->SetActorLocation(DeathBag->GetActorLocation()+FVector(0,0,70));
+            Check(DeathBag->IsHidden() && !P->TakeItem(DeathBag) && DeathBag->Items.Num()==2,TEXT("hidden_equipment_drop_cannot_be_looted"));
+            // Explicitly reveal this fixture to keep the preserved equipment rules covered.
+            DeathBag->SetActorHiddenInGame(false); P->SetActorLocation(DeathBag->GetActorLocation()+FVector(500,0,70));
             Check(!P->TakeItem(DeathBag),TEXT("loot_distance_rejected"));
             P->SetActorLocation(DeathBag->GetActorLocation()+FVector(0,0,70));
             Check(P->TakeItem(DeathBag) && P->Inventory.Num()==1 && P->Inventory[0].ID==OldWeapon && DeathBag->Items.Num()==1,TEXT("loot_atomic_transfer"));
@@ -1399,14 +1406,14 @@ void ACLHUD::DrawHUD()
         const float MinimumX=X+290.f*ACLHero::MinimumChargeSeconds/ACLHero::MaximumChargeSeconds;
         DrawLine(MinimumX,Y+2,MinimumX,Y+16,FLinearColor(.7f,.8f,1.f),2);
     }
-    DrawText(Mode && Mode->bSurvival?TEXT("Tab 락온 · Q 스킬 · E 획득/제단/탈출 · I 가방 · R 새 생명"):TEXT("Tab 락온 · Q 스킬 · E 획득/제단 · I 가방 · N 다음 전투 · R 다시 시작"),FLinearColor::White,25,97);
+    DrawText(Mode && Mode->bSurvival?TEXT("Tab 락온 · Q 스킬 · E 제단/탈출 · I 가방 · R 새 생명"):TEXT("Tab 락온 · Q 스킬 · E 제단 · I 가방 · N 다음 전투 · R 다시 시작"),FLinearColor::White,25,97);
     DrawText(P->Notice,FLinearColor::Yellow,25,123);
     FString Owned=TEXT("보유 각성: "); if(P->Awakenings.IsEmpty()) Owned+=TEXT("없음");
     for(int32 I=0;I<P->Awakenings.Num();++I) Owned+=FString::Printf(TEXT("[%d] %s   "),I+1,Lab::Names[P->Awakenings[I]]);
     DrawText(Owned,FLinearColor::White,25,148);
     DrawText(Mode && Mode->bSurvival?FString::Printf(TEXT("Lv %d · 경험치 %d/%d · 번개 %d · 칼날 %d · 검 강화 %d · 일반 검기 %d명"),P->Level,P->Experience,P->ExperienceRequired(),P->LightningRank,P->BladeRank,P->PowerRank,P->NormalWaveTargets()):TEXT("개발 중: 탑 등반 · 파티 · 멀티플레이"),FLinearColor(.7f,.8f,1.f),25,174);
     if(Mode && Mode->bVictory) DrawText(TEXT("탈출 성공! 장비를 지켰습니다 · R: 다시 시작"),FLinearColor::Green,Canvas->SizeX*.5f-225,Canvas->SizeY*.5f,nullptr,1.4f);
-    if(Mode && Mode->bEncounterCleared) DrawText(TEXT("전투 완료 · 장비를 챙긴 뒤 N: 다음 전투"),FLinearColor::Yellow,Canvas->SizeX*.5f-170,Canvas->SizeY-45);
+    if(Mode && Mode->bEncounterCleared) DrawText(TEXT("전투 완료 · N: 다음 전투"),FLinearColor::Yellow,Canvas->SizeX*.5f-170,Canvas->SizeY-45);
     if(Lab::Now(P)<P->HitMarkerUntil)
     {
         const float X=Canvas->SizeX*.5f,Y=Canvas->SizeY*.5f;
