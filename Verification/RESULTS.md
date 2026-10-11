@@ -13,3 +13,5 @@
 원본 엔진 로그는 로컬 Verification에 보존하고 Git에는 요약과 화면을 기록한다. 자동 시험은 재미·난이도와 청감 품질을 검증하지 않는다. 타격감·다수 적 전투는 사용자 재플레이가 필요하다. 전체 D1/D2 완료가 아니다.
 
 2026-10-11 공격 정면 검사: -AscensionView -AscensionFacingVerify로 실제 렌더링 후 4방향 × 일반/강공격 8개 경우 검사. ASCENSION_FACING_VERIFY PASS attacks=8, 모든 실제 몸 정면 dot 1.000. AttackFacing.png, HeavyFacing.png 확인. BuildMonsterFacing.log 빌드 성공. 공격 중 이동 차단 등 기존 회귀 시험 ASCENSION_VERIFY PASS wall_trials=20. 기존 기록에서 공격 회전을 유지한다고 설명한 내용은 이번 보정으로 갱신한다.
+
+2026-10-11 몬스터 모델 최종 검증: BuildMonsterFinal.log 빌드 성공. ImportUndead.log에서 별도 메시·스켈레톤·재질·대기·달리기·검 공격 저장 완료. MonsterView.log에서 ASCENSION_MONSTER_MODEL_LOADED clips=3/3 세 역할 모두 로드. Monsters.png 실제 화면 확인. MonsterSpawn.log: 20개 시드의 적 모두 UndeadSentinelRig이며 임시 몸체 숨김, 종류 조합·거리·배치·다음 전투 장비 유지 검사 PASS seeds=20. 최종 에셋 적용 후 Combat.log: ASCENSION_VERIFY PASS wall_trials=20. Meshy 잔액 API 1,642, 이번 26/누적 58크레딧. 도형 검·애니메이션 전환은 초기 수준이다.
