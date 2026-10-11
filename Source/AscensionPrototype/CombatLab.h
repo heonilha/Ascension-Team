@@ -46,6 +46,7 @@ public:
     void NextEncounter();
     void ImpactFeedback(float Strength, const FVector& Position);
     double HitMarkerUntil = 0;
+    double HurtUntil = 0;
     void UseAltar();
     void ToggleInventory(); void SelectPrevious(); void SelectNext(); void EquipSelected();
     bool TakeItem(ACLDrop* Drop);
@@ -86,6 +87,7 @@ private:
     UPROPERTY() TArray<TObjectPtr<UAnimSequence>> Clips;
     int32 VisualState = -1;
     bool bHasModel = false;
+    float MoveForward = 0, MoveRight = 0;
     double CameraImpactUntil = 0;
     float CameraImpactStrength = 0;
     FTimerHandle ImpactPauseTimer;

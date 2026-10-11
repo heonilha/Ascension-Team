@@ -62,11 +62,13 @@ namespace Lab
     }
     void Visual(ACharacter* Character,const TArray<TObjectPtr<UAnimSequence>>& Clips,int32 State,int32& Previous,float Duration=0)
     {
-        // Idle/slash and locomotion/roll use different source forward axes.
-        Character->GetMesh()->SetRelativeRotation(FRotator(0,(State==1 || State==4)?270:180,0));
         if(State==Previous || !Clips.IsValidIndex(State) || !Clips[State]) return;
+        Character->GetMesh()->SetRelativeRotation(FRotator(0,270,0));
         Previous=State; Character->GetMesh()->PlayAnimation(Clips[State],State<=1);
-        Character->GetMesh()->SetPlayRate(Duration>0?Clips[State]->GetPlayLength()/Duration:1.f);
+        const float Start=State==3?.55f:State==2?.1f:0.f;
+        const float EndPadding=State==3?.9f:State==2?.2f:0.f;
+        Character->GetMesh()->SetPosition(Start,false);
+        Character->GetMesh()->SetPlayRate(Duration>0?FMath::Max(.1f,Clips[State]->GetPlayLength()-Start-EndPadding)/Duration:1.f);
     }
     void AttachSword(ACharacter* Character,UStaticMeshComponent* Sword)
     {
@@ -84,13 +86,18 @@ namespace Lab
         }
         UE_LOG(LogTemp,Warning,TEXT("ASCENSION_SWORD_BONE_NOT_FOUND"));
     }
-    void AlignBodyForward(USkeletalMeshComponent* Mesh)
+    void AlignBodyForward(USkeletalMeshComponent* Mesh,float Delta=0)
     {
         if(Mesh->GetBoneIndex(TEXT("LeftShoulder"))==INDEX_NONE || Mesh->GetBoneIndex(TEXT("RightShoulder"))==INDEX_NONE || Mesh->GetBoneIndex(TEXT("Head"))==INDEX_NONE || Mesh->GetBoneIndex(TEXT("Hips"))==INDEX_NONE) return;
         const FVector Right=Mesh->GetBoneLocation(TEXT("RightShoulder"),EBoneSpaces::ComponentSpace)-Mesh->GetBoneLocation(TEXT("LeftShoulder"),EBoneSpaces::ComponentSpace);
         const FVector Up=Mesh->GetBoneLocation(TEXT("Head"),EBoneSpaces::ComponentSpace)-Mesh->GetBoneLocation(TEXT("Hips"),EBoneSpaces::ComponentSpace);
         const FVector Forward=FVector::CrossProduct(Right,Up).GetSafeNormal2D();
-        if(!Forward.IsNearlyZero()) Mesh->SetRelativeRotation(FRotator(0,-Forward.Rotation().Yaw,0));
+        if(!Forward.IsNearlyZero())
+        {
+            const float Twist=Delta>0?FMath::Clamp(FMath::FindDeltaAngleDegrees(90.f,Forward.Rotation().Yaw),-25.f,25.f):0.f;
+            const FRotator Target(0,-Forward.Rotation().Yaw+Twist,0);
+            Mesh->SetRelativeRotation(Delta>0?FMath::RInterpTo(Mesh->GetRelativeRotation(),Target,Delta,25.f):Target);
+        }
     }
     double Now(const AActor* A) { return A->GetWorld()->GetTimeSeconds(); }
     bool Clear(const AActor* Source, const AActor* Target)
@@ -162,8 +169,8 @@ void ACLHero::SetupPlayerInputComponent(UInputComponent* Input)
     Input->BindAction("Choice1",IE_Pressed,this,&ACLHero::Choice1); Input->BindAction("Choice2",IE_Pressed,this,&ACLHero::Choice2);
     Input->BindAction("Choice3",IE_Pressed,this,&ACLHero::Choice3); Input->BindAction("Skip",IE_Pressed,this,&ACLHero::Skip);
 }
-void ACLHero::Forward(float V) { if(HP>0 && Lab::Now(this)>=DodgeEnd && Lab::Now(this)>=AttackEnd) AddMovementInput(FRotator(0,GetControlRotation().Yaw,0).Vector(),V); }
-void ACLHero::Right(float V) { if(HP>0 && Lab::Now(this)>=DodgeEnd && Lab::Now(this)>=AttackEnd) AddMovementInput(FRotationMatrix(FRotator(0,GetControlRotation().Yaw,0)).GetUnitAxis(EAxis::Y),V); }
+void ACLHero::Forward(float V) { MoveForward=V; if(HP>0 && Lab::Now(this)>=DodgeEnd && Lab::Now(this)>=AttackEnd) AddMovementInput(FRotator(0,GetControlRotation().Yaw,0).Vector(),V); }
+void ACLHero::Right(float V) { MoveRight=V; if(HP>0 && Lab::Now(this)>=DodgeEnd && Lab::Now(this)>=AttackEnd) AddMovementInput(FRotationMatrix(FRotator(0,GetControlRotation().Yaw,0)).GetUnitAxis(EAxis::Y),V); }
 void ACLHero::LookX(float V) { if(!IsValid(Locked)) AddControllerYawInput(V); }
 void ACLHero::LookY(float V) { AddControllerPitchInput(V); }
 void ACLHero::Tick(float Delta)
@@ -171,15 +178,15 @@ void ACLHero::Tick(float Delta)
     Super::Tick(Delta); const double T=Lab::Now(this); if(HP<=0) return;
     const float Impact=FMath::Clamp(float((CameraImpactUntil-T)/.12),0.f,1.f)*CameraImpactStrength;
     Camera->SetRelativeLocation(FVector(0,FMath::Sin(T*135)*Impact,FMath::Sin(T*175)*Impact*.55f));
-    Lab::Visual(this,Clips,T<DodgeEnd?4:T<AttackEnd?(bHeavy?3:2):GetVelocity().SizeSquared2D()>100?1:0,VisualState,T<DodgeEnd?float(DodgeEnd-DodgeStart):T<AttackEnd?(bHeavy?.85f:.44f):0);
+    Lab::Visual(this,Clips,T<DodgeEnd?4:T<AttackEnd?(bHeavy?3:2):GetVelocity().SizeSquared2D()>100?1:0,VisualState,T<DodgeEnd?float(DodgeEnd-DodgeStart):T<AttackEnd?(bHeavy?.95f:.68f):0);
     // Slash clips have their own forward axis too; keep the visible torso on
     // the actor's locked swing direction throughout normal and heavy attacks.
-    if(bHasModel && T>=DodgeEnd) Lab::AlignBodyForward(GetMesh());
+    if(bHasModel && T>=DodgeEnd) Lab::AlignBodyForward(GetMesh(),T<AttackEnd?Delta:0.f);
     if(bHasModel)
     {
         const FBoxSphereBounds Bounds=GetMesh()->GetSkeletalMeshAsset()->GetImportedBounds();
         FVector Offset(0,0,-88-(Bounds.Origin.Z-Bounds.BoxExtent.Z)*GetMesh()->GetRelativeScale3D().Z);
-        if(T<DodgeEnd)
+        if(T<DodgeEnd || T<AttackEnd)
         {
             // Keep the animated pelvis over the capsule; gameplay owns horizontal roll travel.
             const FVector Hips=GetMesh()->GetBoneLocation(TEXT("hips"),EBoneSpaces::ComponentSpace);
@@ -222,8 +229,8 @@ void ACLHero::StartAttack(bool HeavyAttack)
     const double T=Lab::Now(this); if(HP<=0 || T<AttackEnd || T<DodgeEnd || !Offers.IsEmpty() || bInventoryOpen) return;
     bHeavy=HeavyAttack; Combo=HeavyAttack?0:(T-LastCombo<1.1?Combo%3+1:1); LastCombo=T;
     bEmpowered=T<PerfectUntil; PerfectUntil=0;
-    AttackStart=T; HitTime=T+(bHeavy?.30:.12);
-    AttackEnd=T+(bHeavy?.85:.44)+(bHeavy && HasAwakening(4)?.45:0); bResolved=false;
+    AttackStart=T; HitTime=T+(bHeavy?.46:.28);
+    AttackEnd=T+(bHeavy?.95:.68)+(bHeavy && HasAwakening(4)?.45:0); bResolved=false;
     ConsumeMovementInputVector(); GetCharacterMovement()->StopMovementImmediately(); VisualState=-1;
     SwingDirection=FRotator(0,GetControlRotation().Yaw,0).Vector(); SetActorRotation(SwingDirection.Rotation());
 }
@@ -252,7 +259,9 @@ void ACLHero::NextEncounter()
 void ACLHero::Dodge()
 {
     double T=Lab::Now(this); if(HP<=0 || T<DodgeReady || T<DodgeEnd || (!bResolved && T<HitTime)) return;
-    AttackEnd=T; bResolved=true; DashDirection=GetLastMovementInputVector().GetSafeNormal2D();
+    AttackEnd=T; bResolved=true;
+    const FRotationMatrix CameraAxes(FRotator(0,GetControlRotation().Yaw,0));
+    DashDirection=(CameraAxes.GetUnitAxis(EAxis::X)*MoveForward+CameraAxes.GetUnitAxis(EAxis::Y)*MoveRight).GetSafeNormal2D();
     if(DashDirection.IsNearlyZero()) DashDirection=FRotator(0,GetControlRotation().Yaw,0).Vector();
     ConsumeMovementInputVector(); GetCharacterMovement()->StopMovementImmediately();
     DodgeStart=T; DodgeProgress=0; DodgeEnd=T+.65; ImmuneEnd=T+.15; DodgeReady=T+1.0;
@@ -280,6 +289,7 @@ void ACLHero::ReceiveHit(float Damage)
 {
     if(HP<=0) return;
     if(Lab::Now(this)<ImmuneEnd) { PerfectUntil=Lab::Now(this)+2; Notice=TEXT("정확한 회피! 2초 안에 검으로 공격하면 반격 피해가 증가합니다."); return; }
+    HurtUntil=Lab::Now(this)+.2;
     HP=FMath::Max(0.f,HP-FMath::Max(1.f,Damage-ArmorReduction())); DrawDebugSphere(GetWorld(),GetActorLocation(),100,12,FColor::Red,false,.2,0,3);
     if(HP==0)
     {
@@ -368,6 +378,7 @@ void ACLHero::ResetLife()
     Inventory.Empty(); Weapon=Lab::Item(0,0); Armor=Lab::Item(1,0); bInventoryOpen=false; SelectedItem=0;
     GetMesh()->SetVisibility(bHasModel); Sword->SetVisibility(true); Body->SetVisibility(!bHasModel); VisualState=-1;
     bResolved=true; AttackEnd=DodgeEnd=ImmuneEnd=DodgeReady=SkillReady=PerfectUntil=0; Combo=0; AltarUses=0; LastCombo=-100;
+    MoveForward=MoveRight=0; HurtUntil=0;
     GetCharacterMovement()->StopMovementImmediately(); SetActorLocation(FVector(-750,0,100));
     GetWorldTimerManager().ClearTimer(ImpactPauseTimer); CustomTimeDilation=1.f; CameraImpactUntil=HitMarkerUntil=0; Camera->SetRelativeLocation(FVector::ZeroVector);
     if(Controller) Controller->SetControlRotation(FRotator(-30,0,0));
@@ -543,6 +554,40 @@ void AAscensionMode::Tick(float Delta)
     }
     if(bView)
     {
+        if(FParse::Param(FCommandLine::Get(),TEXT("AscensionDodgeVerify")) && VerifyStage>=2)
+        {
+            const int32 Step=(VerifyStage-2)/3,Phase=(VerifyStage-2)%3;
+            if(Step>=8) { UE_LOG(LogTemp,Display,TEXT("ASCENSION_DODGE_VERIFY %s cases=8"),bFailed?TEXT("FAIL"):TEXT("PASS")); FPlatformMisc::RequestExitWithStatus(false,bFailed?1:0); return; }
+            if(Phase==0)
+            {
+                P->SetActorLocation(FVector(-700,-500,100)); P->DodgeReady=0;
+                P->Controller->SetControlRotation(FRotator(-30,Step<4?0:90,0));
+                const FVector2D Inputs[]={FVector2D(0,-1),FVector2D(0,1),FVector2D(-1,0),FVector2D(1,1)};
+                P->Forward(Inputs[Step%4].X); P->Right(Inputs[Step%4].Y); P->ConsumeMovementInputVector(); P->Attack();
+                NextCheck=T+.4;
+            }
+            else if(Phase==1)
+            {
+                const FRotationMatrix Axes(FRotator(0,P->GetControlRotation().Yaw,0));
+                const FVector Expected=(Axes.GetUnitAxis(EAxis::X)*P->MoveForward+Axes.GetUnitAxis(EAxis::Y)*P->MoveRight).GetSafeNormal();
+                VerifyPosition=P->GetActorLocation(); P->Dodge();
+                Check(T<P->DodgeEnd && FVector::DotProduct(Expected,P->DashDirection)>.99f,TEXT("held_direction_survives_attack_lock"));
+                P->Forward(0); P->Right(0); NextCheck=T+.7;
+            }
+            else
+            {
+                const FVector Travel=P->GetActorLocation()-VerifyPosition;
+                Check(Travel.Size2D()>240 && FVector::DotProduct(Travel.GetSafeNormal2D(),P->DashDirection)>.99f,TEXT("post_attack_roll_travels_selected_direction")); NextCheck=T+.2;
+            }
+            ++VerifyStage; return;
+        }
+        if(FParse::Param(FCommandLine::Get(),TEXT("AscensionHealthView")) && VerifyStage>=2)
+        {
+            if(VerifyStage==2) { P->ReceiveHit(75); ++VerifyStage; NextCheck=T+.4; }
+            else if(VerifyStage==3) { FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir()/TEXT("HealthLow.png"),true,false); ++VerifyStage; NextCheck=T+.5; }
+            else FPlatformMisc::RequestExit(false);
+            return;
+        }
         if(FParse::Param(FCommandLine::Get(),TEXT("AscensionFacingVerify")) && VerifyStage>=2)
         {
             const int32 Step=(VerifyStage-2)/2;
@@ -562,7 +607,7 @@ void AAscensionMode::Tick(float Delta)
                 const FVector Forward=FVector::CrossProduct(Side,Up).GetSafeNormal2D();
                 const float Dot=FVector::DotProduct(Forward,P->GetActorForwardVector());
                 UE_LOG(LogTemp,Display,TEXT("ASCENSION_ATTACK_FACING step=%d heavy=%d yaw=%.1f dot=%.3f"),Step,Step%2,P->GetActorRotation().Yaw,Dot);
-                Check(Dot>.99f,TEXT("attack_visible_body_faces_swing"));
+                Check(Dot>.65f && FVector::DotProduct(P->GetActorForwardVector(),P->SwingDirection)>.99f,TEXT("attack_preserves_front_with_natural_twist"));
                 if(Step<2) FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir()/(Step?TEXT("HeavyFacing.png"):TEXT("AttackFacing.png")),true,false);
                 ++VerifyStage; NextCheck=T+1;
             }
