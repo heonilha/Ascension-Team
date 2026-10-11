@@ -238,7 +238,7 @@ void ACLHero::Tick(float Delta)
         }
         GetMesh()->SetRelativeLocation(Offset);
     }
-    DrawDebugBox(GetWorld(),GetActorLocation(),FVector(27,27,75),GetActorQuat(),FColor::Cyan,false,-1,0,2);
+    if(FParse::Param(FCommandLine::Get(),TEXT("AscensionCollisionView"))) DrawDebugBox(GetWorld(),GetActorLocation(),FVector(27,27,75),GetActorQuat(),FColor::Cyan,false,-1,0,2);
     if(IsValid(Locked) && (Locked->HP<=0 || FVector::DistSquared(GetActorLocation(),Locked->GetActorLocation())>FMath::Square(1500.f))) Locked=nullptr;
     if(IsValid(Locked))
     {
@@ -573,8 +573,9 @@ void ACLEnemy::Tick(float Delta)
     Lab::AlignBodyForward(GetMesh());
     if(T<DamageTextUntil) DrawDebugString(GetWorld(),DamageTextOrigin+FVector(0,0,130+(1-(DamageTextUntil-T)/.65)*65),FString::Printf(TEXT("-%.0f"),LastDamage),nullptr,FColor(255,220,100),0,true,1.3f);
     FColor C=Kind==2?FColor::Purple:Kind==1?FColor::Orange:FColor::Red;
-    DrawDebugString(GetWorld(),GetActorLocation()+FVector(0,0,Kind==2?150:110),FString::Printf(TEXT("%s %.0f/%.0f"),bBoss?TEXT("심연의 수문장"):Kind==2?TEXT("망령 지휘관"):Kind==1?TEXT("폭주 망령"):TEXT("망령 검병"),HP,MaxHP),nullptr,C,0,true);
-    DrawDebugBox(GetWorld(),GetActorLocation(),Kind==2?FVector(45,45,90):FVector(30,40,70),GetActorQuat(),C,false,-1,0,3);
+    if(bBoss || Kind==2 || HP<MaxHP || P->Locked==this)
+        DrawDebugString(GetWorld(),GetActorLocation()+FVector(0,0,Kind==2?150:110),FString::Printf(TEXT("%s %.0f/%.0f"),bBoss?TEXT("심연의 수문장"):Kind==2?TEXT("망령 지휘관"):Kind==1?TEXT("폭주 망령"):TEXT("망령 검병"),HP,MaxHP),nullptr,C,0,true);
+    if(FParse::Param(FCommandLine::Get(),TEXT("AscensionCollisionView"))) DrawDebugBox(GetWorld(),GetActorLocation(),Kind==2?FVector(45,45,90):FVector(30,40,70),GetActorQuat(),C,false,-1,0,3);
     if(bFrozenForView) { ConsumeMovementInputVector(); GetCharacterMovement()->StopMovementImmediately(); return; }
     if(T<StaggerUntil)
     {
@@ -789,7 +790,7 @@ void AAscensionMode::Tick(float Delta)
             P->DisableInput(Cast<APlayerController>(P->Controller)); P->SetActorLocation(FVector(0,0,100));
             P->LightningReady=P->BladeReady=T+1000; bView=false; SpawnEncounter(20261011); bView=true;
             SpawnSurvivalBatch(36); Check(RemainingEnemies()==48,TEXT("render_horde_spawns_48"));
-            P->Arm->bDoCollisionTest=false; P->Arm->TargetArmLength=2900; P->Controller->SetControlRotation(FRotator(-65,0,0));
+            P->Arm->bDoCollisionTest=false; P->Arm->TargetArmLength=4500; P->Controller->SetControlRotation(FRotator(-65,0,0));
             VerifyStage=1; NextCheck=T+2.5;
         }
         else if(VerifyStage==1)
@@ -1024,7 +1025,8 @@ void AAscensionMode::Tick(float Delta)
         }
         for(TActorIterator<ACLEnemy> It(GetWorld());It;++It) It->Destroy();
         const FGuid Gear=P->Weapon.ID;
-        const FVector Corners[]={FVector(1670,1470,100),FVector(-1670,1470,100),FVector(1670,-1470,100),FVector(-1670,-1470,100)};
+        const float CornerX=ArenaHalfWidth-130,CornerY=ArenaHalfDepth-130;
+        const FVector Corners[]={FVector(CornerX,CornerY,100),FVector(-CornerX,CornerY,100),FVector(CornerX,-CornerY,100),FVector(-CornerX,-CornerY,100)};
         for(const FVector& Corner:Corners)
         {
             P->SetActorLocation(Corner); FHitResult Ground;
