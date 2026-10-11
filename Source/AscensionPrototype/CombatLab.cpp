@@ -76,6 +76,14 @@ namespace Lab
         }
         UE_LOG(LogTemp,Warning,TEXT("ASCENSION_SWORD_BONE_NOT_FOUND"));
     }
+    void AlignBodyForward(USkeletalMeshComponent* Mesh)
+    {
+        if(Mesh->GetBoneIndex(TEXT("LeftShoulder"))==INDEX_NONE || Mesh->GetBoneIndex(TEXT("RightShoulder"))==INDEX_NONE || Mesh->GetBoneIndex(TEXT("Head"))==INDEX_NONE || Mesh->GetBoneIndex(TEXT("Hips"))==INDEX_NONE) return;
+        const FVector Right=Mesh->GetBoneLocation(TEXT("RightShoulder"),EBoneSpaces::ComponentSpace)-Mesh->GetBoneLocation(TEXT("LeftShoulder"),EBoneSpaces::ComponentSpace);
+        const FVector Up=Mesh->GetBoneLocation(TEXT("Head"),EBoneSpaces::ComponentSpace)-Mesh->GetBoneLocation(TEXT("Hips"),EBoneSpaces::ComponentSpace);
+        const FVector Forward=FVector::CrossProduct(Right,Up).GetSafeNormal2D();
+        if(!Forward.IsNearlyZero()) Mesh->SetRelativeRotation(FRotator(0,-Forward.Rotation().Yaw,0));
+    }
     double Now(const AActor* A) { return A->GetWorld()->GetTimeSeconds(); }
     bool Clear(const AActor* Source, const AActor* Target)
     {
@@ -156,6 +164,7 @@ void ACLHero::Tick(float Delta)
     const float Impact=FMath::Clamp(float((CameraImpactUntil-T)/.12),0.f,1.f)*CameraImpactStrength;
     Camera->SetRelativeLocation(FVector(0,FMath::Sin(T*135)*Impact,FMath::Sin(T*175)*Impact*.55f));
     Lab::Visual(this,Clips,T<DodgeEnd?4:T<AttackEnd?(bHeavy?3:2):GetVelocity().SizeSquared2D()>100?1:0,VisualState,T<DodgeEnd?float(DodgeEnd-DodgeStart):T<AttackEnd?(bHeavy?.85f:.44f):0);
+    if(bHasModel && T>=AttackEnd && T>=DodgeEnd) Lab::AlignBodyForward(GetMesh());
     if(bHasModel)
     {
         const FBoxSphereBounds Bounds=GetMesh()->GetSkeletalMeshAsset()->GetImportedBounds();
@@ -531,11 +540,37 @@ void AAscensionMode::Tick(float Delta)
         if(VerifyStage==0)
         {
             P->SetActorLocation(FVector(-750,0,100)); P->Controller->SetControlRotation(FRotator(-30,0,0));
+            P->DisableInput(Cast<APlayerController>(P->Controller)); P->SetActorRotation(FRotator::ZeroRotator);
             for(TActorIterator<ACLEnemy> It(GetWorld());It;++It) { It->bFrozenForView=true; It->GetCharacterMovement()->StopMovementImmediately(); }
             NextCheck=T+2; VerifyStage=1;
         }
         else if(VerifyStage==1)
         {
+            USkeletalMeshComponent* Mesh=P->GetMesh();
+            FName Left,Right,Head,Hips;
+            for(int32 I=0;I<Mesh->GetNumBones();++I)
+            {
+                FName Bone=Mesh->GetBoneName(I); FString Name=Bone.ToString().ToLower();
+                if(Name.Contains(TEXT("leftshoulder"))) Left=Bone;
+                if(Name.Contains(TEXT("rightshoulder"))) Right=Bone;
+                if(Name==TEXT("head")) Head=Bone;
+                if(Name==TEXT("hips")) Hips=Bone;
+            }
+            if(!Left.IsNone() && !Right.IsNone() && !Head.IsNone() && !Hips.IsNone())
+            {
+                const FVector Side=(Mesh->GetSocketLocation(Right)-Mesh->GetSocketLocation(Left)).GetSafeNormal();
+                const FVector Up=(Mesh->GetSocketLocation(Head)-Mesh->GetSocketLocation(Hips)).GetSafeNormal();
+                const FVector ModelForward=FVector::CrossProduct(Side,Up).GetSafeNormal2D();
+                const FVector CameraForward=FRotator(0,P->GetControlRotation().Yaw,0).Vector();
+                UE_LOG(LogTemp,Display,TEXT("ASCENSION_MODEL_FACING dot=%.3f model_yaw=%.1f camera_yaw=%.1f"),FVector::DotProduct(ModelForward,CameraForward),ModelForward.Rotation().Yaw,CameraForward.Rotation().Yaw);
+                Check(FVector::DotProduct(ModelForward,CameraForward)>.99f,TEXT("visible_model_faces_camera"));
+                DrawDebugDirectionalArrow(GetWorld(),P->GetActorLocation()+FVector(0,0,-80),P->GetActorLocation()+FVector(0,0,-80)+CameraForward*200,30,FColor::Green,false,2,0,4);
+                DrawDebugDirectionalArrow(GetWorld(),P->GetActorLocation()+FVector(0,0,-75),P->GetActorLocation()+FVector(0,0,-75)+ModelForward*200,30,FColor::Red,false,2,0,4);
+            }
+            else
+            {
+                for(int32 I=0;I<Mesh->GetNumBones();++I) UE_LOG(LogTemp,Display,TEXT("ASCENSION_BONE %s"),*Mesh->GetBoneName(I).ToString());
+            }
             FString Shot=FPaths::ProjectSavedDir()/TEXT("CombatLab.png");
             FScreenshotRequest::RequestScreenshot(Shot,true,false); NextCheck=T+3; VerifyStage=2;
         }

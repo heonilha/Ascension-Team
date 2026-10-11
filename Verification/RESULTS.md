@@ -1,5 +1,7 @@
 # 검증 기록
 
+몸 방향 추가 검증: 스크린샷 전용 실행은 실제 키보드·마우스 입력을 차단한다. 양쪽 어깨와 머리·골반으로 모델의 실제 정면을 계산했다. 수정 전 카메라 Yaw 0도에서 모델 정면 -30도(dot 0.866), 수정 후 -0.4도(dot 1.000)로 확인했다. visible_model_faces_camera PASS. 대기·이동에 동작 자체의 방향을 보정하며 공격·구르기 회전은 해당 동작을 유지한다. BuildBodyForward.log 빌드 성공.
+
 날짜: 2026-10-11 (한국 시간). Unreal Engine 5.8.3.
 
 - BuildRandomCombat.log: Editor 모듈 빌드 성공(6.25초).
