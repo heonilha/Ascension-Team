@@ -31,6 +31,16 @@ public:
 };
 
 UCLASS()
+class ACLExperience : public AActor
+{
+    GENERATED_BODY()
+public:
+    ACLExperience();
+    virtual void Tick(float Delta) override;
+    int32 Value = 8;
+};
+
+UCLASS()
 class ACLHero : public ACharacter
 {
     GENERATED_BODY()
@@ -47,6 +57,12 @@ public:
     void ImpactFeedback(float Strength, const FVector& Position);
     double HitMarkerUntil = 0;
     double HurtUntil = 0;
+    void GainExperience(int32 Amount);
+    void TryLevelUp();
+    void TickAuxiliaryCombat();
+    int32 Level = 1, Experience = 0, LightningRank = 1, BladeRank = 1, PowerRank = 0;
+    int32 ExperienceRequired() const { return 25+15*(Level-1); }
+    bool bLevelChoice = false;
     void UseAltar();
     void ToggleInventory(); void SelectPrevious(); void SelectNext(); void EquipSelected();
     bool TakeItem(ACLDrop* Drop);
@@ -88,6 +104,7 @@ private:
     int32 VisualState = -1;
     bool bHasModel = false;
     float MoveForward = 0, MoveRight = 0;
+    double LightningReady = 0, BladeReady = 0;
     double CameraImpactUntil = 0;
     float CameraImpactStrength = 0;
     FTimerHandle ImpactPauseTimer;
@@ -108,6 +125,7 @@ public:
     double Deadline = 0;
     double AlertUntil = 0;
     bool bFrozenForView = false;
+    bool bBoss = false;
     UPROPERTY() TObjectPtr<UStaticMeshComponent> Body;
 private:
     void BeginTell(); void Strike();
@@ -135,6 +153,12 @@ public:
     int32 RemainingEnemies() const;
     int32 Wave = 1, SpawnedEnemies = 0;
     bool bEncounterCleared = false;
+    bool bSurvival = false, bBossSpawned = false, bBossDefeated = false, bVictory = false;
+    double SurvivalStart = 0, ReinforcementReady = 0, EliteReady = 0;
+    float SurvivalElapsed() const;
+    void ResetSurvival();
+    void TickSurvival();
+    void SpawnSurvivalBatch(int32 Count,bool Elite=false,bool Boss=false);
     virtual void Tick(float Delta) override;
 private:
     void Check(bool Condition, const TCHAR* Name);

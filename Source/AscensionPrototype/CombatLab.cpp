@@ -28,8 +28,8 @@
 
 namespace Lab
 {
-    const TCHAR* Names[] = {TEXT("번개 반격"), TEXT("연격 마무리"), TEXT("넓은 파동"), TEXT("탐욕 · 폭발 회피"), TEXT("탐욕 · 파괴의 일격"), TEXT("빠른 파동")};
-    const TCHAR* Details[] = {TEXT("정확한 회피 후 반격 피해 추가 +15"), TEXT("일반 공격의 세 번째 타격 피해 +12"), TEXT("Q 스킬 반경 320 → 440"), TEXT("회피 폭발 피해 18 / 대가: 주변 적의 경계 확대"), TEXT("강공격 피해 +25 / 대가: 공격 후 빈틈 +0.45초"), TEXT("Q 스킬 재사용 대기시간 6초 → 4초")};
+    const TCHAR* Names[] = {TEXT("번개 반격"), TEXT("연격 마무리"), TEXT("넓은 파동"), TEXT("탐욕 · 폭발 회피"), TEXT("탐욕 · 파괴의 일격"), TEXT("빠른 파동"),TEXT("자동 번개 강화"),TEXT("회전 칼날 강화"),TEXT("강인한 성장")};
+    const TCHAR* Details[] = {TEXT("정확한 회피 후 반격 피해 추가 +15"), TEXT("일반 공격의 세 번째 타격 피해 +12"), TEXT("Q 스킬 반경 320 → 440"), TEXT("회피 폭발 피해 18 / 대가: 주변 적의 경계 확대"), TEXT("강공격 피해 +25 / 대가: 공격 후 빈틈 +0.45초"), TEXT("Q 스킬 재사용 대기시간 6초 → 4초"),TEXT("가까운 적 자동 공격 · 피해 +5 / 주기 단축"),TEXT("주변 적 자동 공격 · 피해 +3"),TEXT("직접 검 공격 피해 +3 / 체력 +15 회복")};
     FCLItem Item(int32 Kind,int32 Tier) { FCLItem I; I.ID=FGuid::NewGuid(); I.Kind=Kind; I.Tier=Tier; return I; }
     FString ItemName(const FCLItem& I)
     {
@@ -159,15 +159,15 @@ void ACLHero::SetupPlayerInputComponent(UInputComponent* Input)
     Input->BindAxis("LookX",this,&ACLHero::LookX); Input->BindAxis("LookY",this,&ACLHero::LookY);
     Input->BindAction("Attack",IE_Pressed,this,&ACLHero::Attack); Input->BindAction("Heavy",IE_Pressed,this,&ACLHero::Heavy);
     Input->BindAction("Dodge",IE_Pressed,this,&ACLHero::Dodge); Input->BindAction("Skill",IE_Pressed,this,&ACLHero::Skill);
-    Input->BindAction("Lock",IE_Pressed,this,&ACLHero::ToggleLock); Input->BindAction("Restart",IE_Pressed,this,&ACLHero::ResetLife);
+    Input->BindAction("Lock",IE_Pressed,this,&ACLHero::ToggleLock); Input->BindAction("Restart",IE_Pressed,this,&ACLHero::ResetLife).bExecuteWhenPaused=true;
     Input->BindAction("Altar",IE_Pressed,this,&ACLHero::UseAltar);
     Input->BindAction("Inventory",IE_Pressed,this,&ACLHero::ToggleInventory);
     Input->BindAction("Previous",IE_Pressed,this,&ACLHero::SelectPrevious);
     Input->BindAction("Next",IE_Pressed,this,&ACLHero::SelectNext);
     Input->BindAction("Equip",IE_Pressed,this,&ACLHero::EquipSelected);
     Input->BindAction("NextEncounter",IE_Pressed,this,&ACLHero::NextEncounter);
-    Input->BindAction("Choice1",IE_Pressed,this,&ACLHero::Choice1); Input->BindAction("Choice2",IE_Pressed,this,&ACLHero::Choice2);
-    Input->BindAction("Choice3",IE_Pressed,this,&ACLHero::Choice3); Input->BindAction("Skip",IE_Pressed,this,&ACLHero::Skip);
+    Input->BindAction("Choice1",IE_Pressed,this,&ACLHero::Choice1).bExecuteWhenPaused=true; Input->BindAction("Choice2",IE_Pressed,this,&ACLHero::Choice2).bExecuteWhenPaused=true;
+    Input->BindAction("Choice3",IE_Pressed,this,&ACLHero::Choice3).bExecuteWhenPaused=true; Input->BindAction("Skip",IE_Pressed,this,&ACLHero::Skip).bExecuteWhenPaused=true;
 }
 void ACLHero::Forward(float V) { MoveForward=V; if(HP>0 && Lab::Now(this)>=DodgeEnd && Lab::Now(this)>=AttackEnd) AddMovementInput(FRotator(0,GetControlRotation().Yaw,0).Vector(),V); }
 void ACLHero::Right(float V) { MoveRight=V; if(HP>0 && Lab::Now(this)>=DodgeEnd && Lab::Now(this)>=AttackEnd) AddMovementInput(FRotationMatrix(FRotator(0,GetControlRotation().Yaw,0)).GetUnitAxis(EAxis::Y),V); }
@@ -176,6 +176,8 @@ void ACLHero::LookY(float V) { AddControllerPitchInput(V); }
 void ACLHero::Tick(float Delta)
 {
     Super::Tick(Delta); const double T=Lab::Now(this); if(HP<=0) return;
+    TryLevelUp(); if(bLevelChoice) return;
+    TickAuxiliaryCombat();
     const float Impact=FMath::Clamp(float((CameraImpactUntil-T)/.12),0.f,1.f)*CameraImpactStrength;
     Camera->SetRelativeLocation(FVector(0,FMath::Sin(T*135)*Impact,FMath::Sin(T*175)*Impact*.55f));
     Lab::Visual(this,Clips,T<DodgeEnd?4:T<AttackEnd?(bHeavy?3:2):GetVelocity().SizeSquared2D()>100?1:0,VisualState,T<DodgeEnd?float(DodgeEnd-DodgeStart):T<AttackEnd?(bHeavy?.95f:.68f):0);
@@ -236,7 +238,7 @@ void ACLHero::StartAttack(bool HeavyAttack)
 }
 void ACLHero::ResolveSwing()
 {
-    float Damage=(bHeavy?35:20)+WeaponBonus(); if(bEmpowered) Damage+=HasAwakening(0)?25:10;
+    float Damage=(bHeavy?35:20)+WeaponBonus()+PowerRank*3; if(bEmpowered) Damage+=HasAwakening(0)?25:10;
     if(!bHeavy && Combo==3 && HasAwakening(1)) Damage+=12;
     if(bHeavy && HasAwakening(4)) Damage+=25;
     bool Hit=false; FVector Contact;
@@ -255,6 +257,50 @@ void ACLHero::ImpactFeedback(float Strength,const FVector& Position)
 void ACLHero::NextEncounter()
 {
     if(AAscensionMode* Mode=Cast<AAscensionMode>(GetWorld()->GetAuthGameMode())) Mode->StartNextEncounter();
+}
+void ACLHero::GainExperience(int32 Amount)
+{
+    const AAscensionMode* Mode=Cast<AAscensionMode>(GetWorld()->GetAuthGameMode());
+    if(HP<=0 || Amount<=0 || !Mode || !Mode->bSurvival) return;
+    Experience+=Amount; TryLevelUp();
+}
+void ACLHero::TryLevelUp()
+{
+    if(HP<=0 || !Offers.IsEmpty() || Experience<ExperienceRequired()) return;
+    Experience-=ExperienceRequired(); ++Level; bLevelChoice=true; Offers={6,7,8}; PendingReplacement=-1;
+    Notice=TEXT("레벨 업! 시간이 멈췄습니다. 1 · 2 · 3: 성장 선택 / Esc: 포기");
+    UGameplayStatics::SetGamePaused(this,true);
+}
+void ACLHero::TickAuxiliaryCombat()
+{
+    const AAscensionMode* Mode=Cast<AAscensionMode>(GetWorld()->GetAuthGameMode());
+    if(!Mode || !Mode->bSurvival || HP<=0 || Mode->bVictory || bLevelChoice) return;
+    const double T=Lab::Now(this);
+    for(int32 I=0;I<2;++I)
+    {
+        const float Angle=float(T*180)+I*180;
+        const FVector Point=GetActorLocation()+FVector(220,0,0).RotateAngleAxis(Angle,FVector::UpVector);
+        DrawDebugSolidBox(GetWorld(),Point,FVector(4,4,25),FRotator(0,Angle,35).Quaternion(),FColor(100,220,255),false,-1);
+    }
+    if(T>=LightningReady)
+    {
+        ACLEnemy* Target=nullptr; float Best=FMath::Square(700.f);
+        for(TActorIterator<ACLEnemy> It(GetWorld());It;++It)
+        { const float D=FVector::DistSquared2D(GetActorLocation(),It->GetActorLocation()); if(It->HP>0 && D<Best && Lab::Clear(this,*It)) { Best=D; Target=*It; } }
+        if(Target)
+        {
+            const FVector At=Target->GetActorLocation(); Target->ReceiveHit(12+LightningRank*5);
+            DrawDebugLine(GetWorld(),At+FVector(0,0,350),At,FColor::Cyan,false,.2f,0,8);
+            DrawDebugSphere(GetWorld(),At,25,8,FColor::Cyan,false,.2f,0,2);
+            LightningReady=T+FMath::Max(.7f,2.2f-LightningRank*.15f);
+        }
+    }
+    if(T>=BladeReady)
+    {
+        for(TActorIterator<ACLEnemy> It(GetWorld());It;++It)
+            if(It->HP>0 && FVector::DistSquared2D(GetActorLocation(),It->GetActorLocation())<=FMath::Square(240.f) && Lab::Clear(this,*It)) It->ReceiveHit(5+BladeRank*3);
+        BladeReady=T+1.2;
+    }
 }
 void ACLHero::Dodge()
 {
@@ -298,6 +344,7 @@ void ACLHero::ReceiveHit(float Damage)
         Inventory.Empty(); Weapon=FCLItem(); Armor=FCLItem(); bInventoryOpen=false;
         GetMesh()->SetVisibility(false); Sword->SetVisibility(false); Body->SetVisibility(false);
         Awakenings.Empty(); Offers.Empty(); PendingReplacement=-1; Locked=nullptr; bResolved=true;
+        Level=1; Experience=PowerRank=LightningRank=BladeRank=0; bLevelChoice=false;
         CustomTimeDilation=1.f; Camera->SetRelativeLocation(FVector::ZeroVector);
         GetCharacterMovement()->StopMovementImmediately(); Notice=TEXT("사망했습니다. 각성이 초기화되었습니다. R: 다시 도전");
         UE_LOG(LogTemp,Display,TEXT("ASCENSION_DEATH life=%s"),*LifeID.ToString());
@@ -323,6 +370,8 @@ void ACLHero::OfferAwakening()
 void ACLHero::UseAltar()
 {
     if(HP<=0 || !Offers.IsEmpty()) return;
+    if(AAscensionMode* Mode=Cast<AAscensionMode>(GetWorld()->GetAuthGameMode()); Mode && Mode->bSurvival && Mode->bBossDefeated && FVector::Dist2D(GetActorLocation(),FVector(-1100,900,0))<180)
+    { Mode->bVictory=true; Notice=TEXT("탈출 성공! 장비를 지켰습니다. R: 새 생명 시작"); UGameplayStatics::SetGamePaused(this,true); return; }
     ACLDrop* Nearest=nullptr; float Best=FMath::Square(200.f);
     for(TActorIterator<ACLDrop> It(GetWorld());It;++It)
     {
@@ -337,6 +386,15 @@ void ACLHero::UseAltar()
 void ACLHero::Choose(int32 Index)
 {
     if(HP<=0) return;
+    if(bLevelChoice)
+    {
+        if(!Offers.IsValidIndex(Index)) return;
+        if(Offers[Index]==6) ++LightningRank;
+        else if(Offers[Index]==7) ++BladeRank;
+        else { ++PowerRank; HP=FMath::Min(100.f,HP+15); }
+        Offers.Empty(); bLevelChoice=false; UGameplayStatics::SetGamePaused(this,false);
+        Notice=TEXT("성장 완료! 경험치를 모아 다음 강화를 선택하세요."); TryLevelUp(); return;
+    }
     if(PendingReplacement>=0)
     {
         if(!Awakenings.IsValidIndex(Index)) return; Awakenings[Index]=PendingReplacement;
@@ -349,7 +407,7 @@ void ACLHero::Choose(int32 Index)
     }
     PendingReplacement=-1; Offers.Empty(); Notice=TEXT("각성을 획득했습니다! 달라진 공격과 회피를 시험해보세요.");
 }
-void ACLHero::Skip() { if(bInventoryOpen) { bInventoryOpen=false; return; } Offers.Empty(); PendingReplacement=-1; Notice=TEXT("새 각성을 포기했습니다. 기존 각성은 유지됩니다."); }
+void ACLHero::Skip() { if(bInventoryOpen) { bInventoryOpen=false; return; } Offers.Empty(); PendingReplacement=-1; if(bLevelChoice) { bLevelChoice=false; UGameplayStatics::SetGamePaused(this,false); } Notice=TEXT("새 강화를 포기했습니다. 기존 능력은 유지됩니다."); }
 float ACLHero::WeaponBonus() const { return Weapon.ID.IsValid()?Weapon.Tier*4.f:0; }
 float ACLHero::ArmorReduction() const { return Armor.ID.IsValid() && Armor.Tier==1?3.f:0; }
 void ACLHero::ToggleInventory() { if(HP>0 && Offers.IsEmpty()) { bInventoryOpen=!bInventoryOpen; SelectedItem=0; } }
@@ -374,6 +432,8 @@ bool ACLHero::TakeItem(ACLDrop* Drop)
 }
 void ACLHero::ResetLife()
 {
+    UGameplayStatics::SetGamePaused(this,false); bLevelChoice=false;
+    Level=1; Experience=PowerRank=0; LightningRank=BladeRank=1; LightningReady=BladeReady=0;
     HP=100; Awakenings.Empty(); Offers.Empty(); PendingReplacement=-1; LifeID=FGuid::NewGuid(); Locked=nullptr;
     Inventory.Empty(); Weapon=Lab::Item(0,0); Armor=Lab::Item(1,0); bInventoryOpen=false; SelectedItem=0;
     GetMesh()->SetVisibility(bHasModel); Sword->SetVisibility(true); Body->SetVisibility(!bHasModel); VisualState=-1;
@@ -382,7 +442,7 @@ void ACLHero::ResetLife()
     GetCharacterMovement()->StopMovementImmediately(); SetActorLocation(FVector(-750,0,100));
     GetWorldTimerManager().ClearTimer(ImpactPauseTimer); CustomTimeDilation=1.f; CameraImpactUntil=HitMarkerUntil=0; Camera->SetRelativeLocation(FVector::ZeroVector);
     if(Controller) Controller->SetControlRotation(FRotator(-30,0,0));
-    if(AAscensionMode* Mode=Cast<AAscensionMode>(GetWorld()->GetAuthGameMode())) { Mode->Wave=1; Mode->SpawnEncounter(); }
+    if(AAscensionMode* Mode=Cast<AAscensionMode>(GetWorld()->GetAuthGameMode())) { Mode->Wave=1; Mode->ResetSurvival(); Mode->SpawnEncounter(); }
     Notice=TEXT("새 전투를 시작합니다. 장비와 각성 없이 다시 도전하세요.");
 }
 
@@ -436,7 +496,7 @@ void ACLEnemy::Tick(float Delta)
     Lab::AlignBodyForward(GetMesh());
     if(T<DamageTextUntil) DrawDebugString(GetWorld(),DamageTextOrigin+FVector(0,0,130+(1-(DamageTextUntil-T)/.65)*65),FString::Printf(TEXT("-%.0f"),LastDamage),nullptr,FColor(255,220,100),0,true,1.3f);
     FColor C=Kind==2?FColor::Purple:Kind==1?FColor::Orange:FColor::Red;
-    DrawDebugString(GetWorld(),GetActorLocation()+FVector(0,0,Kind==2?150:110),FString::Printf(TEXT("%s %.0f/%.0f"),Kind==2?TEXT("망령 지휘관"):Kind==1?TEXT("폭주 망령"):TEXT("망령 검병"),HP,MaxHP),nullptr,C,0,true);
+    DrawDebugString(GetWorld(),GetActorLocation()+FVector(0,0,Kind==2?150:110),FString::Printf(TEXT("%s %.0f/%.0f"),bBoss?TEXT("심연의 수문장"):Kind==2?TEXT("망령 지휘관"):Kind==1?TEXT("폭주 망령"):TEXT("망령 검병"),HP,MaxHP),nullptr,C,0,true);
     DrawDebugBox(GetWorld(),GetActorLocation(),Kind==2?FVector(45,45,90):FVector(30,40,70),GetActorQuat(),C,false,-1,0,3);
     if(bFrozenForView) return;
     if(Phase==0)
@@ -477,6 +537,11 @@ void ACLEnemy::ReceiveHit(float Damage)
     UE_LOG(LogTemp,Display,TEXT("ASCENSION_HIT kind=%d damage=%.0f hp=%.0f"),Kind,Damage,HP);
     if(HP==0)
     {
+        if(AAscensionMode* Mode=Cast<AAscensionMode>(GetWorld()->GetAuthGameMode()); Mode && Mode->bSurvival)
+        {
+            if(ACLExperience* Orb=GetWorld()->SpawnActor<ACLExperience>(GetActorLocation(),FRotator::ZeroRotator)) Orb->Value=bBoss?120:Kind==2?40:Kind==1?12:8;
+            if(bBoss) { Mode->bBossDefeated=true; if(ACLHero* P=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0))) P->Notice=TEXT("보스 처치! 초록 탈출구에서 E를 누르세요."); }
+        }
         DrawDebugString(GetWorld(),DamageTextOrigin+FVector(0,0,140),FString::Printf(TEXT("-%.0f"),Damage),nullptr,FColor(255,220,100),.65f,true,1.3f);
         ACLDrop* Drop=GetWorld()->SpawnActor<ACLDrop>(GetActorLocation()-FVector(0,0,55),FRotator::ZeroRotator);
         if(Drop) Drop->Items.Add(Lab::Item(Kind==1?1:0,Kind==2?2:1));
@@ -497,11 +562,28 @@ void ACLDrop::Tick(float Delta)
     DrawDebugBox(GetWorld(),GetActorLocation(),FVector(27,22,22),FColor::Yellow,false,-1,0,3);
     DrawDebugString(GetWorld(),GetActorLocation()+FVector(0,0,50),FString::Printf(TEXT("장비 가방 / E / %d개"),Items.Num()),nullptr,FColor::Yellow,0,true);
 }
+ACLExperience::ACLExperience()
+{
+    PrimaryActorTick.bCanEverTick=true; InitialLifeSpan=180;
+    UStaticMeshComponent* Mesh=CreateDefaultSubobject<UStaticMeshComponent>(TEXT("ExperienceOrb")); SetRootComponent(Mesh);
+    static ConstructorHelpers::FObjectFinder<UStaticMesh> Sphere(TEXT("/Engine/BasicShapes/Sphere.Sphere"));
+    Mesh->SetStaticMesh(Sphere.Object); Mesh->SetRelativeScale3D(FVector(.14f)); Mesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+}
+void ACLExperience::Tick(float Delta)
+{
+    Super::Tick(Delta); ACLHero* P=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0)); if(!P || P->HP<=0) return;
+    const float Distance=FVector::Dist2D(GetActorLocation(),P->GetActorLocation());
+    DrawDebugSphere(GetWorld(),GetActorLocation(),10,8,FColor::Cyan,false,-1,0,2);
+    if(Distance<90 && Lab::Clear(this,P)) { const int32 Amount=Value; Value=0; SetActorTickEnabled(false); Destroy(); P->GainExperience(Amount); }
+    else if(Distance<350 && Lab::Clear(this,P)) SetActorLocation(FMath::VInterpTo(GetActorLocation(),P->GetActorLocation(),Delta,8));
+}
 AAscensionMode::AAscensionMode() { PrimaryActorTick.bCanEverTick=true; DefaultPawnClass=ACLHero::StaticClass(); HUDClass=ACLHUD::StaticClass(); }
 void AAscensionMode::BeginPlay()
 {
     Super::BeginPlay(); bVerify=FParse::Param(FCommandLine::Get(),TEXT("AscensionVerify")); bView=FParse::Param(FCommandLine::Get(),TEXT("AscensionView")) || FParse::Param(FCommandLine::Get(),TEXT("AscensionMotionView")) || FParse::Param(FCommandLine::Get(),TEXT("AscensionCombatView")); bSpawnVerify=FParse::Param(FCommandLine::Get(),TEXT("AscensionSpawnVerify"));
-    SpawnEncounter(); NextCheck=Lab::Now(this)+1;
+    bSurvival=(!bVerify && !bView && !bSpawnVerify) || FParse::Param(FCommandLine::Get(),TEXT("AscensionSurvivalVerify")) || FParse::Param(FCommandLine::Get(),TEXT("AscensionSurvivalView"));
+    ResetSurvival(); SpawnEncounter(); NextCheck=Lab::Now(this)+1;
+    if(bSurvival) if(ACLHero* P=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0))) P->Notice=TEXT("5분 생존 → 보스 처치 → 탈출구 E. 검은 직접, 번개와 칼날은 자동 공격합니다.");
 }
 void AAscensionMode::Check(bool Condition,const TCHAR* Name)
 {
@@ -511,7 +593,8 @@ void AAscensionMode::Check(bool Condition,const TCHAR* Name)
 void AAscensionMode::Tick(float Delta)
 {
     Super::Tick(Delta);
-    if(!bVerify && !bView && !bSpawnVerify && !bEncounterCleared && SpawnedEnemies>0 && RemainingEnemies()==0)
+    if(bSurvival && !bVerify) TickSurvival();
+    if(!bSurvival && !bVerify && !bView && !bSpawnVerify && !bEncounterCleared && SpawnedEnemies>0 && RemainingEnemies()==0)
     {
         bEncounterCleared=true;
         if(ACLHero* Hero=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0)); Hero && Hero->HP>0)
@@ -528,6 +611,35 @@ void AAscensionMode::Tick(float Delta)
     ACLHero* P=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0));
     if(!P) { Check(false,TEXT("player_spawn")); FPlatformMisc::RequestExitWithStatus(false,1); return; }
     double T=Lab::Now(this);
+    if(bVerify && FParse::Param(FCommandLine::Get(),TEXT("AscensionSurvivalVerify")))
+    {
+        for(TActorIterator<ACLEnemy> It(GetWorld());It;++It) It->Destroy();
+        const FGuid Gear=P->Weapon.ID;
+        P->GainExperience(25);
+        Check(P->Level==2 && P->Experience==0 && P->Offers.Num()==3 && UGameplayStatics::IsGamePaused(this),TEXT("experience_level_choice_pauses_world"));
+        P->Choose(0); Check(P->LightningRank==2 && !UGameplayStatics::IsGamePaused(this) && P->Weapon.ID==Gear,TEXT("growth_selection_resumes_preserves_gear"));
+        P->SetActorLocation(FVector(0,-600,100));
+        ACLEnemy* Target=GetWorld()->SpawnActor<ACLEnemy>(P->GetActorLocation()+FVector(130,0,0),FRotator::ZeroRotator);
+        if(Target)
+        {
+            Target->Configure(0); Target->SetActorTickEnabled(false); P->LightningReady=P->BladeReady=0; P->TickAuxiliaryCombat();
+            Check(Target->HP==20,TEXT("automatic_lightning_and_blade_damage"));
+        }
+        ACLExperience* Orb=GetWorld()->SpawnActor<ACLExperience>(P->GetActorLocation(),FRotator::ZeroRotator);
+        if(Orb) { Orb->Tick(.016f); Check(P->Experience==8 && Orb->Value==0 && !Orb->IsActorTickEnabled(),TEXT("experience_orb_collected_once")); }
+        SurvivalStart=T-180; ReinforcementReady=EliteReady=0; const int32 Before=RemainingEnemies(); TickSurvival();
+        Check(RemainingEnemies()>Before && Wave==7,TEXT("elapsed_time_increases_enemy_pressure"));
+        SpawnSurvivalBatch(100); Check(RemainingEnemies()<=24,TEXT("survival_enemy_cap"));
+        SurvivalStart=T-300; TickSurvival(); const int32 WithBoss=RemainingEnemies(); TickSurvival();
+        Check(bBossSpawned && RemainingEnemies()==WithBoss && WithBoss<=25,TEXT("five_minutes_spawns_one_boss"));
+        for(TActorIterator<ACLEnemy> It(GetWorld());It;++It) if(It->bBoss) { It->ReceiveHit(10000); break; }
+        P->Skip(); P->SetActorLocation(FVector(-1100,900,100)); P->UseAltar();
+        Check(bBossDefeated && bVictory && P->Weapon.ID==Gear,TEXT("boss_kill_unlocks_exit_preserves_equipment"));
+        UGameplayStatics::SetGamePaused(this,false); P->ReceiveHit(10000);
+        Check(P->HP==0 && P->Experience==0 && P->PowerRank==0 && P->LightningRank==0 && P->Awakenings.IsEmpty(),TEXT("death_clears_survival_growth"));
+        P->ResetLife(); Check(P->HP==100 && P->Level==1 && P->Experience==0 && P->LightningRank==1 && !bBossSpawned && !bVictory,TEXT("new_life_resets_survival_run"));
+        UE_LOG(LogTemp,Display,TEXT("ASCENSION_SURVIVAL_VERIFY %s"),bFailed?TEXT("FAIL"):TEXT("PASS")); FPlatformMisc::RequestExitWithStatus(false,bFailed?1:0); return;
+    }
     if(bSpawnVerify)
     {
         TArray<FVector> First;
@@ -554,6 +666,11 @@ void AAscensionMode::Tick(float Delta)
     }
     if(bView)
     {
+        if(FParse::Param(FCommandLine::Get(),TEXT("AscensionSurvivalView")) && VerifyStage>=2)
+        {
+            P->GainExperience(25); FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir()/TEXT("GrowthChoice.png"),true,false);
+            ++VerifyStage; NextCheck=T+100; return;
+        }
         if(FParse::Param(FCommandLine::Get(),TEXT("AscensionDodgeVerify")) && VerifyStage>=2)
         {
             const int32 Step=(VerifyStage-2)/3,Phase=(VerifyStage-2)%3;
@@ -762,9 +879,64 @@ int32 AAscensionMode::RemainingEnemies() const
 void AAscensionMode::StartNextEncounter()
 {
     ACLHero* P=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0)); if(!P || P->HP<=0) return;
+    if(bSurvival) { P->Notice=TEXT("생존 전투: 적은 자동으로 증가합니다. 5분 후 보스를 처치하고 탈출하세요."); return; }
     if(RemainingEnemies()>0) { P->Notice=TEXT("남은 몬스터를 처치한 뒤 다음 전투를 시작할 수 있습니다."); return; }
     if(!P->Offers.IsEmpty()) { P->Notice=TEXT("각성을 선택하거나 Esc로 포기한 뒤 N을 누르세요."); return; }
     ++Wave; SpawnEncounter(); P->Notice=FString::Printf(TEXT("%d번째 전투 시작! 장비와 각성은 유지됩니다."),Wave);
+}
+float AAscensionMode::SurvivalElapsed() const { return FMath::Max(0.f,float(Lab::Now(this)-SurvivalStart)); }
+void AAscensionMode::ResetSurvival()
+{
+    SurvivalStart=Lab::Now(this); ReinforcementReady=SurvivalStart+8; EliteReady=SurvivalStart+60;
+    bBossSpawned=bBossDefeated=bVictory=false;
+    for(TActorIterator<ACLExperience> It(GetWorld());It;++It) It->Destroy();
+}
+void AAscensionMode::TickSurvival()
+{
+    ACLHero* P=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0)); if(!P || P->HP<=0 || bVictory) return;
+    const double T=Lab::Now(this); const float Elapsed=SurvivalElapsed(); Wave=1+int32(Elapsed/30);
+    if(Elapsed>=300)
+    {
+        if(!bBossSpawned) SpawnSurvivalBatch(1,false,true);
+    }
+    else
+    {
+        if(T>=ReinforcementReady) { SpawnSurvivalBatch(FMath::Min(3+int32(Elapsed/60),7)); ReinforcementReady=T+FMath::Max(4.f,8.f-Elapsed/90); }
+        if(T>=EliteReady) { SpawnSurvivalBatch(1,true); EliteReady=T+60; }
+    }
+    if(bBossDefeated)
+    {
+        const FVector Exit(-1100,900,10);
+        DrawDebugCircle(GetWorld(),Exit,120,32,FColor::Green,false,-1,0,5,FVector::ForwardVector,FVector::RightVector,false);
+        DrawDebugLine(GetWorld(),Exit,Exit+FVector(0,0,200),FColor::Green,false,-1,0,10);
+        DrawDebugString(GetWorld(),Exit+FVector(0,0,180),TEXT("탈출구 · E"),nullptr,FColor::Green,0,true);
+        FVector From=P->GetActorLocation(); From.Z=10;
+        DrawDebugDirectionalArrow(GetWorld(),From,From+(Exit-From).GetSafeNormal2D()*180,30,FColor::Green,false,-1,0,4);
+    }
+}
+void AAscensionMode::SpawnSurvivalBatch(int32 Count,bool Elite,bool Boss)
+{
+    ACLHero* P=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0)); if(!P || P->HP<=0 || (Boss && bBossSpawned)) return;
+    for(int32 I=0;I<Count;++I)
+    {
+        if(!Boss && RemainingEnemies()>=24) break;
+        for(int32 Attempt=0;Attempt<150;++Attempt)
+        {
+            FVector At=P->GetActorLocation()+FVector(FMath::FRandRange(450.f,850.f),0,0).RotateAngleAxis(FMath::FRandRange(0.f,360.f),FVector::UpVector); At.Z=100;
+            if(FMath::Abs(At.X)>1350 || FMath::Abs(At.Y)>1350 || GetWorld()->OverlapBlockingTestByChannel(At,FQuat::Identity,ECC_WorldStatic,FCollisionShape::MakeCapsule(45,88))) continue;
+            bool Safe=true; for(TActorIterator<ACLEnemy> It(GetWorld());It;++It) if(FVector::DistSquared2D(At,It->GetActorLocation())<FMath::Square(160.f)) { Safe=false; break; }
+            if(!Safe) continue;
+            FActorSpawnParameters Params; Params.SpawnCollisionHandlingOverride=ESpawnActorCollisionHandlingMethod::DontSpawnIfColliding;
+            if(ACLEnemy* Enemy=GetWorld()->SpawnActor<ACLEnemy>(At,FRotator::ZeroRotator,Params))
+            {
+                Enemy->Configure(Elite || Boss?2:FMath::FRand()<(SurvivalElapsed()<120?.25f:.5f)?1:0);
+                Enemy->HP=Enemy->MaxHP*=1.f+FMath::Min(.4f,SurvivalElapsed()/600.f);
+                Enemy->AlertUntil=Lab::Now(this)+600; ++SpawnedEnemies;
+                if(Boss) { Enemy->bBoss=true; Enemy->HP=Enemy->MaxHP=450; Enemy->GetMesh()->SetRelativeScale3D(Enemy->GetMesh()->GetRelativeScale3D()*1.25f); bBossSpawned=true; P->Notice=TEXT("5분 생존 성공! 심연의 수문장을 처치하고 탈출하세요."); }
+                break;
+            }
+        }
+    }
 }
 void AAscensionMode::SpawnEncounter(int32 Seed)
 {
@@ -788,11 +960,12 @@ void AAscensionMode::SpawnEncounter(int32 Seed)
             Found=Spaced && !GetWorld()->OverlapBlockingTestByChannel(At,FQuat::Identity,ECC_WorldStatic,FCollisionShape::MakeCapsule(45,82));
         }
         if(!Found) { UE_LOG(LogTemp,Warning,TEXT("ASCENSION_SPAWN_NO_SAFE_POSITION index=%d"),I); continue; }
-        const int32 Kind=Fixed?I:I==Count-1?2:I<2?I:Random.RandRange(0,1);
+        const int32 Kind=Fixed?I:bSurvival?Random.RandRange(0,1):I==Count-1?2:I<2?I:Random.RandRange(0,1);
         FActorSpawnParameters Params; Params.SpawnCollisionHandlingOverride=ESpawnActorCollisionHandlingMethod::DontSpawnIfColliding;
         if(ACLEnemy* Enemy=GetWorld()->SpawnActor<ACLEnemy>(At,FRotator::ZeroRotator,Params))
         {
             Enemy->Configure(Kind); if(!Fixed) Enemy->HP=Enemy->MaxHP*=1.f+.08f*FMath::Min(Wave-1,5);
+            if(bSurvival) Enemy->AlertUntil=Lab::Now(this)+600;
             Occupied.Add(Enemy->GetActorLocation()); ++SpawnedEnemies;
         }
     }
@@ -803,20 +976,29 @@ void ACLHUD::DrawHUD()
     Super::DrawHUD(); ACLHero* P=Cast<ACLHero>(GetOwningPawn()); if(!P || !Canvas) return;
     const float BarWidth=FMath::Min(360.f,Canvas->SizeX-48.f),BarX=(Canvas->SizeX-BarWidth)*.5f,BarY=Canvas->SizeY-85.f;
     const float Health=FMath::Clamp(P->HP/100.f,0.f,1.f);
-    DrawRect(FLinearColor(0,0,0,.85f),BarX-12,BarY-28,BarWidth+24,62);
+    DrawRect(FLinearColor(0,0,0,.85f),BarX-12,BarY-28,BarWidth+24,76);
     DrawText(FString::Printf(TEXT("체력  %.0f / 100%s"),P->HP,P->HP>0 && P->HP<=30?TEXT("  · 위험"):TEXT("")),FLinearColor::White,BarX,BarY-23,nullptr,1.1f);
     DrawRect(FLinearColor(.2f,.2f,.23f,1),BarX,BarY,BarWidth,16);
     DrawRect(Lab::Now(P)<P->HurtUntil?FLinearColor::White:Health<=.3f?FLinearColor(.9f,.12f,.1f):FLinearColor(.12f,.8f,.65f),BarX,BarY,BarWidth*Health,16);
     DrawRect(FLinearColor(0,0,0,.75f),12,12,FMath::Min(1000.f,Canvas->SizeX-24.f),190);
     AAscensionMode* Mode=Cast<AAscensionMode>(GetWorld()->GetAuthGameMode());
-    DrawText(FString::Printf(TEXT("각성과 탐욕의 탑 · 전투 %d · 남은 몬스터 %d"),Mode?Mode->Wave:1,Mode?Mode->RemainingEnemies():0),FLinearColor::White,25,22,nullptr,1.15);
+    if(Mode && Mode->bSurvival)
+    {
+        const int32 Seconds=FMath::Min(300,int32(Mode->SurvivalElapsed()));
+        DrawText(FString::Printf(TEXT("5분 생존 · %d:%02d / 5:00 · 적 %d%s"),Seconds/60,Seconds%60,Mode->RemainingEnemies(),Mode->bBossDefeated?TEXT(" · 초록 탈출구로 이동"):Mode->bBossSpawned?TEXT(" · 보스전"):TEXT("")),FLinearColor::White,25,22,nullptr,1.15);
+        DrawRect(FLinearColor(.12f,.15f,.22f),BarX,BarY+25,BarWidth,6);
+        DrawRect(FLinearColor(.35f,.6f,1.f),BarX,BarY+25,BarWidth*FMath::Clamp(float(P->Experience)/P->ExperienceRequired(),0.f,1.f),6);
+    }
+    else DrawText(FString::Printf(TEXT("각성과 탐욕의 탑 · 전투 %d · 남은 몬스터 %d"),Mode?Mode->Wave:1,Mode?Mode->RemainingEnemies():0),FLinearColor::White,25,22,nullptr,1.15);
     DrawText(FString::Printf(TEXT("체력 %.0f / 100    회피 %.1f초    Q 스킬 %.1f초    락온 %s"),P->HP,FMath::Max(0.,P->DodgeReady-Lab::Now(P)),FMath::Max(0.,P->SkillReady-Lab::Now(P)),IsValid(P->Locked)?TEXT("켜짐"):TEXT("꺼짐")),FLinearColor::White,25,49);
     DrawText(TEXT("WASD 이동 · 마우스 시점 · 좌클릭 검 공격 · 우클릭 강공격 · Space 회피"),FLinearColor::White,25,74);
-    DrawText(TEXT("Tab 락온 · Q 스킬 · E 획득/제단 · I 가방 · N 다음 전투 · R 다시 시작"),FLinearColor::White,25,97);
+    DrawText(Mode && Mode->bSurvival?TEXT("Tab 락온 · Q 스킬 · E 획득/제단/탈출 · I 가방 · R 새 생명"):TEXT("Tab 락온 · Q 스킬 · E 획득/제단 · I 가방 · N 다음 전투 · R 다시 시작"),FLinearColor::White,25,97);
     DrawText(P->Notice,FLinearColor::Yellow,25,123);
     FString Owned=TEXT("보유 각성: "); if(P->Awakenings.IsEmpty()) Owned+=TEXT("없음");
     for(int32 I=0;I<P->Awakenings.Num();++I) Owned+=FString::Printf(TEXT("[%d] %s   "),I+1,Lab::Names[P->Awakenings[I]]);
-    DrawText(Owned,FLinearColor::White,25,148); DrawText(TEXT("개발 중: 탑 등반 · 파티 · 멀티플레이"),FLinearColor(.7f,.7f,.7f),25,174);
+    DrawText(Owned,FLinearColor::White,25,148);
+    DrawText(Mode && Mode->bSurvival?FString::Printf(TEXT("Lv %d · 경험치 %d/%d · 자동 번개 %d · 회전 칼날 %d · 검 강화 %d"),P->Level,P->Experience,P->ExperienceRequired(),P->LightningRank,P->BladeRank,P->PowerRank):TEXT("개발 중: 탑 등반 · 파티 · 멀티플레이"),FLinearColor(.7f,.8f,1.f),25,174);
+    if(Mode && Mode->bVictory) DrawText(TEXT("탈출 성공! 장비를 지켰습니다 · R: 다시 시작"),FLinearColor::Green,Canvas->SizeX*.5f-225,Canvas->SizeY*.5f,nullptr,1.4f);
     if(Mode && Mode->bEncounterCleared) DrawText(TEXT("전투 완료 · 장비를 챙긴 뒤 N: 다음 전투"),FLinearColor::Yellow,Canvas->SizeX*.5f-170,Canvas->SizeY-45);
     if(Lab::Now(P)<P->HitMarkerUntil)
     {
@@ -834,7 +1016,7 @@ void ACLHUD::DrawHUD()
     if(!P->Offers.IsEmpty())
     {
         DrawRect(FLinearColor(0,0,0,.9f),20,225,FMath::Min(1000.f,Canvas->SizeX-40.f),260);
-        DrawText(P->PendingReplacement>=0?TEXT("보유 각성 교체 · 1 / 2 / 3: 교체할 슬롯 · Esc: 포기"):TEXT("각성 선택 · 1 / 2 / 3: 획득 · Esc: 포기"),FLinearColor::Yellow,35,241);
+        DrawText(P->bLevelChoice?TEXT("레벨 업 · 시간 정지 · 1 / 2 / 3: 성장 선택 · Esc: 포기"):P->PendingReplacement>=0?TEXT("보유 각성 교체 · 1 / 2 / 3: 교체할 슬롯 · Esc: 포기"):TEXT("각성 선택 · 1 / 2 / 3: 획득 · Esc: 포기"),FLinearColor::Yellow,35,241);
         if(P->PendingReplacement>=0) DrawText(FString::Printf(TEXT("새로 얻을 각성: %s"),Lab::Names[P->PendingReplacement]),FLinearColor::White,35,267);
         for(int32 I=0;I<P->Offers.Num();++I)
         {
