@@ -432,6 +432,7 @@ void ACLEnemy::ReceiveHit(float Damage)
     UE_LOG(LogTemp,Display,TEXT("ASCENSION_HIT kind=%d damage=%.0f hp=%.0f"),Kind,Damage,HP);
     if(HP==0)
     {
+        DrawDebugString(GetWorld(),DamageTextOrigin+FVector(0,0,140),FString::Printf(TEXT("-%.0f"),Damage),nullptr,FColor(255,220,100),.65f,true,1.3f);
         ACLDrop* Drop=GetWorld()->SpawnActor<ACLDrop>(GetActorLocation()-FVector(0,0,55),FRotator::ZeroRotator);
         if(Drop) Drop->Items.Add(Lab::Item(Kind==1?1:0,Kind==2?2:1));
         if(Kind==2) if(ACLHero* P=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0))) P->OfferAwakening();
@@ -454,7 +455,7 @@ void ACLDrop::Tick(float Delta)
 AAscensionMode::AAscensionMode() { PrimaryActorTick.bCanEverTick=true; DefaultPawnClass=ACLHero::StaticClass(); HUDClass=ACLHUD::StaticClass(); }
 void AAscensionMode::BeginPlay()
 {
-    Super::BeginPlay(); bVerify=FParse::Param(FCommandLine::Get(),TEXT("AscensionVerify")); bView=FParse::Param(FCommandLine::Get(),TEXT("AscensionView")) || FParse::Param(FCommandLine::Get(),TEXT("AscensionMotionView")); bSpawnVerify=FParse::Param(FCommandLine::Get(),TEXT("AscensionSpawnVerify"));
+    Super::BeginPlay(); bVerify=FParse::Param(FCommandLine::Get(),TEXT("AscensionVerify")); bView=FParse::Param(FCommandLine::Get(),TEXT("AscensionView")) || FParse::Param(FCommandLine::Get(),TEXT("AscensionMotionView")) || FParse::Param(FCommandLine::Get(),TEXT("AscensionCombatView")); bSpawnVerify=FParse::Param(FCommandLine::Get(),TEXT("AscensionSpawnVerify"));
     SpawnEncounter(); NextCheck=Lab::Now(this)+1;
 }
 void AAscensionMode::Check(bool Condition,const TCHAR* Name)
@@ -506,6 +507,17 @@ void AAscensionMode::Tick(float Delta)
     }
     if(bView)
     {
+        if(FParse::Param(FCommandLine::Get(),TEXT("AscensionCombatView")) && VerifyStage>=2)
+        {
+            if(VerifyStage==2)
+            {
+                for(TActorIterator<ACLEnemy> It(GetWorld());It;++It) if(It->Kind==0) { It->SetActorLocation(P->GetActorLocation()+FVector(130,0,0)); break; }
+                P->Attack(); VerifyStage=3; NextCheck=T+.15;
+            }
+            else if(VerifyStage==3) { FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir()/TEXT("CombatImpact.png"),true,false); VerifyStage=4; NextCheck=T+1; }
+            else FPlatformMisc::RequestExit(false);
+            return;
+        }
         if(MotionView && VerifyStage>=2)
         {
             if(VerifyStage==2) { VerifyStage=3; NextCheck=T+.5; }
@@ -619,7 +631,7 @@ void AAscensionMode::SpawnEncounter(int32 Seed)
     TArray<ACLEnemy*> Existing; for(TActorIterator<ACLEnemy> It(GetWorld());It;++It) Existing.Add(*It);
     for(ACLEnemy* Enemy:Existing) { Enemy->SetActorEnableCollision(false); Enemy->Destroy(); }
     bEncounterCleared=false; SpawnedEnemies=0;
-    const bool Fixed=bVerify || bView;
+    const bool Fixed=bVerify || (bView && !FParse::Param(FCommandLine::Get(),TEXT("AscensionCombatView")));
     const FVector FixedPositions[]={FVector(-250,300,100),FVector(400,-350,100),FVector(700,400,100)};
     const int32 Count=Fixed?3:FMath::Clamp(6+Wave,7,10);
     FRandomStream Random(Seed?Seed:FMath::Rand()); TArray<FVector> Occupied;
