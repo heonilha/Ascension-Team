@@ -271,7 +271,8 @@ void ACLHero::Tick(float Delta)
     if(!bHasModel) Sword->SetRelativeRotation(FRotator(0,Swing,0));
 }
 void ACLHero::Attack() { StartAttack(false); }
-float ACLHero::ChargeProgress() const { return bCharging?FMath::Clamp(float((Lab::Now(this)-ChargeStart)/3.0),0.f,1.f):0.f; }
+float ACLHero::ChargeProgress() const { return bCharging?FMath::Clamp(float((Lab::Now(this)-ChargeStart)/MaximumChargeSeconds),0.f,1.f):0.f; }
+bool ACLHero::CanReleaseHeavy() const { return bCharging && Lab::Now(this)-ChargeStart+1.e-6>=MinimumChargeSeconds; }
 void ACLHero::Heavy()
 {
     if(!UsesBladeWave()) { StartAttack(true); return; }
@@ -282,7 +283,9 @@ void ACLHero::Heavy()
 void ACLHero::ReleaseHeavy()
 {
     if(!bCharging) return;
+    const bool Ready=CanReleaseHeavy();
     ReleasedCharge=ChargeProgress(); bCharging=false; VisualState=-1;
+    if(!Ready) { ReleasedCharge=0; Notice=TEXT("충전 취소 · 강화공격은 0.6초 이상 모아야 발사됩니다"); return; }
     if(HP<=0 || !Offers.IsEmpty() || bInventoryOpen) return;
     StartAttack(true);
 }
@@ -880,6 +883,26 @@ void AAscensionMode::Tick(float Delta)
             Check(VerifyEnemy->Phase==1 && FMath::IsNearlyEqual(float(VerifyEnemy->StaggerUntil-T),.04f),TEXT("boss_resists_stagger"));
             P->Heavy(); P->ToggleInventory(); P->ReleaseHeavy(); Check(!P->IsCharging() && P->bInventoryOpen && P->bResolved,TEXT("inventory_cancels_charge_without_shot")); P->ToggleInventory();
             P->Heavy(); P->GainExperience(25); P->ReleaseHeavy(); Check(!P->IsCharging() && P->bLevelChoice && P->bResolved,TEXT("levelup_cancels_charge_while_paused")); P->Choose(0);
+            const double PreviousAttackStart=P->AttackStart,PreviousAttackEnd=P->AttackEnd;
+            P->Heavy(); P->ReleaseHeavy();
+            Check(!P->IsCharging() && P->bResolved && P->ReleasedCharge==0 && P->AttackStart==PreviousAttackStart && P->AttackEnd==PreviousAttackEnd,TEXT("instant_release_cancels_without_attack_or_recovery"));
+            P->Heavy(); P->ChargeStart=T-.599; P->ReleaseHeavy();
+            Check(!P->IsCharging() && P->bResolved && P->AttackStart==PreviousAttackStart && P->AttackEnd==PreviousAttackEnd,TEXT("release_below_minimum_cancels_without_cooldown"));
+            P->Heavy(); P->ChargeStart=T-.601;
+            Check(P->CanReleaseHeavy(),TEXT("minimum_charge_unlocks_release")); P->ReleaseHeavy();
+            Check(!P->bResolved && P->AttackStart==T && FMath::IsNearlyEqual(float(P->AttackEnd-T),.85f),TEXT("minimum_charge_starts_existing_release_recovery"));
+            VerifyStage=14; NextCheck=T+.4;
+        }
+        else if(VerifyStage==14)
+        {
+            int32 Waves=0; bool Minimum=false;
+            for(TActorIterator<ACLBladeWave> It(GetWorld());It;++It)
+            { ++Waves; Minimum=FMath::IsNearlyEqual(It->Damage,49.0233f,.05f) && FMath::IsNearlyEqual(It->Radius,102.0533f,.05f); It->Destroy(); }
+            Check(Waves==1 && Minimum,TEXT("minimum_charge_fires_one_scaled_wave"));
+            VerifyStage=15; NextCheck=T+.5;
+        }
+        else if(VerifyStage==15)
+        {
             P->Heavy(); P->ChargeStart=T-1.5; P->ReleaseHeavy(); VerifyStage=13; NextCheck=T+.4;
         }
         else if(VerifyStage==13)
@@ -1367,11 +1390,14 @@ void ACLHUD::DrawHUD()
     {
         const float X=Canvas->SizeX*.5f-145,Y=Canvas->SizeY*.5f+65,Charge=P->ChargeProgress();
         DrawRect(FLinearColor(0,0,0,.85f),X-8,Y-45,306,69);
-        DrawText(Charge>=1?TEXT("최대 충전 · 놓으면 발사"):TEXT("검기 충전 중 · 놓으면 발사"),FLinearColor(1,.8f,.2f),X,Y-42);
-        DrawText(FString::Printf(TEXT("%.1f / 3.0초 · 피해 %.1f배 · 폭 %.1f배"),Charge*3,1+Charge*2,(70+Charge*160)/70),FLinearColor::White,X,Y-20);
+        const bool Ready=P->CanReleaseHeavy();
+        DrawText(!Ready?TEXT("최소 0.6초 충전 필요 · 지금 놓으면 취소"):(Charge>=1?TEXT("최대 충전 · 놓으면 발사"):TEXT("발사 가능 · 더 모으면 피해와 범위 증가")),Ready?FLinearColor(1,.8f,.2f):FLinearColor(.7f,.8f,1.f),X,Y-42);
+        DrawText(FString::Printf(TEXT("%.1f / %.1f초 · 피해 %.1f배 · 폭 %.1f배"),Charge*ACLHero::MaximumChargeSeconds,ACLHero::MaximumChargeSeconds,1+Charge*2,(70+Charge*160)/70),FLinearColor::White,X,Y-20);
         DrawRect(FLinearColor(.2f,.15f,.08f),X,Y+4,290,10);
         DrawRect(FLinearColor(1,.35f+Charge*.55f,.1f),X,Y+4,290*Charge,10);
         for(int32 I=1;I<3;++I) DrawLine(X+290.f*I/3,Y+4,X+290.f*I/3,Y+14,FLinearColor::White,1);
+        const float MinimumX=X+290.f*ACLHero::MinimumChargeSeconds/ACLHero::MaximumChargeSeconds;
+        DrawLine(MinimumX,Y+2,MinimumX,Y+16,FLinearColor(.7f,.8f,1.f),2);
     }
     DrawText(Mode && Mode->bSurvival?TEXT("Tab 락온 · Q 스킬 · E 획득/제단/탈출 · I 가방 · R 새 생명"):TEXT("Tab 락온 · Q 스킬 · E 획득/제단 · I 가방 · N 다음 전투 · R 다시 시작"),FLinearColor::White,25,97);
     DrawText(P->Notice,FLinearColor::Yellow,25,123);

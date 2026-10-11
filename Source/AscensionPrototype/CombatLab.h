@@ -71,6 +71,9 @@ public:
     void Attack(); void Heavy(); void ReleaseHeavy(); void Dodge(); void Skill(); void ToggleLock();
     bool IsCharging() const { return bCharging; }
     float ChargeProgress() const;
+    static constexpr double MinimumChargeSeconds = .6;
+    static constexpr double MaximumChargeSeconds = 3.0;
+    bool CanReleaseHeavy() const;
     int32 NormalWaveTargets() const { return 1+FMath::Clamp(PowerRank,0,3); }
     void NextEncounter();
     void ImpactFeedback(float Strength, const FVector& Position);
