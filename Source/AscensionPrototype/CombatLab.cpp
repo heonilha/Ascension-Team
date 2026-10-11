@@ -42,7 +42,7 @@ namespace Lab
         if(!Model) return false;
         USkeletalMeshComponent* Mesh=Character->GetMesh(); Mesh->SetSkeletalMeshAsset(Model); Mesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
         FBoxSphereBounds Bounds=Model->GetImportedBounds(); float Scale=180.f/FMath::Max(1.f,float(Bounds.BoxExtent.Z*2));
-        Mesh->SetRelativeScale3D(FVector(Scale)); Mesh->SetRelativeRotation(FRotator(0,270,0));
+        Mesh->SetRelativeScale3D(FVector(Scale)); Mesh->SetRelativeRotation(FRotator(0,180,0));
         Mesh->SetRelativeLocation(FVector(0,0,-88-(Bounds.Origin.Z-Bounds.BoxExtent.Z)*Scale));
         if(UMaterialInterface* Material=LoadObject<UMaterialInterface>(nullptr,TEXT("/Game/Models/M_SharedKnight.M_SharedKnight")))
             for(int32 I=0;I<Mesh->GetNumMaterials();++I) Mesh->SetMaterial(I,Material);
@@ -54,8 +54,8 @@ namespace Lab
     }
     void Visual(ACharacter* Character,const TArray<TObjectPtr<UAnimSequence>>& Clips,int32 State,int32& Previous,float Duration=0)
     {
-        // Calibrate idle with locomotion; retain the separate slash-clip orientation.
-        Character->GetMesh()->SetRelativeRotation(FRotator(0,(State==2 || State==3)?180:270,0));
+        // Idle/slash and locomotion/roll use different source forward axes.
+        Character->GetMesh()->SetRelativeRotation(FRotator(0,(State==1 || State==4)?270:180,0));
         if(State==Previous || !Clips.IsValidIndex(State) || !Clips[State]) return;
         Previous=State; Character->GetMesh()->PlayAnimation(Clips[State],State<=1);
         Character->GetMesh()->SetPlayRate(Duration>0?Clips[State]->GetPlayLength()/Duration:1.f);
@@ -428,7 +428,6 @@ void ACLEnemy::ReceiveHit(float Damage)
         GetWorldTimerManager().SetTimer(ImpactPauseTimer,FTimerDelegate::CreateWeakLambda(this,[this]() { CustomTimeDilation=1.f; }),.045f,false);
         if(Kind==0) { Phase=3; Deadline=Lab::Now(this)+.13; GetCharacterMovement()->StopMovementImmediately(); }
     }
-    DrawDebugSphere(GetWorld(),GetActorLocation(),85,12,FColor::White,false,.12,0,3);
     UE_LOG(LogTemp,Display,TEXT("ASCENSION_HIT kind=%d damage=%.0f hp=%.0f"),Kind,Damage,HP);
     if(HP==0)
     {
