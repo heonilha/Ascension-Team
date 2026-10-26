@@ -570,11 +570,119 @@ void ACLEnemy::Strike()
     if(Kind==2 && StrikeNumber==0) { StrikeNumber=1; BeginTell(); }
     else { Phase=3; Deadline=Lab::Now(this)+(Kind==2?1.5:.8); StrikeNumber=0; }
 }
+const TCHAR* ACLEnemy::BossHint() const
+{
+    if(Phase==3) return TEXT("공격 후 빈틈 · 차징 검기로 반격!");
+    if(Phase==0) return TEXT("수문장 접근 중 · 공격 방향을 확인하세요");
+    return BossAttack==0?TEXT("전방 베기 · 등 뒤나 바깥으로 회피"):
+        BossAttack==1?TEXT("직선 돌진 · 옆으로 회피"):TEXT("주변 내려찍기 · 원 밖으로 이동");
+}
+void ACLEnemy::BeginBossAttack(int32 Pattern)
+{
+    ACLHero* P=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0));
+    if(!bBoss || HP<=0 || !P || P->HP<=0) return;
+    BossAttack=FMath::Clamp(Pattern,0,2); Phase=1; BossTellStart=Lab::Now(this);
+    BossOrigin=GetActorLocation(); BossAim=(P->GetActorLocation()-BossOrigin).GetSafeNormal2D();
+    if(BossAim.IsNearlyZero()) BossAim=GetActorForwardVector();
+    SetActorRotation(BossAim.Rotation()); VisualState=-1; bDashHit=false;
+    const float Tell=BossAttack==0?1.05f:BossAttack==1?1.25f:1.4f;
+    Deadline=BossTellStart+Tell*(bEnraged?.85f:1.f);
+    ConsumeMovementInputVector(); GetCharacterMovement()->StopMovementImmediately();
+    UE_LOG(LogTemp,Display,TEXT("ASCENSION_BOSS_TELL pattern=%d enraged=%d"),BossAttack,bEnraged);
+}
+void ACLEnemy::ResolveBossAttack()
+{
+    ACLHero* P=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0));
+    if(!bBoss || HP<=0 || Phase!=1 || !P || P->HP<=0) return;
+    const double T=Lab::Now(this);
+    if(BossAttack==1)
+    {
+        Phase=2; BossDashRemaining=900; Deadline=T+1.2; return;
+    }
+    const bool Hit=BossAttack==0?Lab::InArc(this,P,BossAim,280,70):
+        FVector::Dist2D(BossOrigin,P->GetActorLocation())<=420 && Lab::Clear(this,P);
+    if(Hit) P->ReceiveHit(BossAttack==0?20:28);
+    BossImpactUntil=T+.45; Phase=3;
+    Deadline=T+(bEnraged?1.15:1.6); BossAttackCount=(BossAttack+1)%3;
+}
+void ACLEnemy::TickBoss(float Delta,ACLHero* P)
+{
+    const double T=Lab::Now(this);
+    if(!bEnraged && HP<=MaxHP*.5f)
+    {
+        bEnraged=true; P->Notice=TEXT("수문장 격노! 공격 예고와 빈틈이 짧아집니다.");
+        UE_LOG(LogTemp,Display,TEXT("ASCENSION_BOSS_ENRAGED"));
+    }
+    // Keep attack timing in world time: ordinary hit-stop must not desync the tells.
+    Lab::Visual(this,Clips,Phase==1?2:Phase==2 || GetVelocity().SizeSquared2D()>100?1:0,VisualState,
+        Phase==1?float(Deadline-BossTellStart):0);
+    const FColor Color=bEnraged?FColor(255,80,50):FColor(255,175,50);
+    if(T<BossImpactUntil)
+    {
+        if(BossAttack==2) DrawDebugCircle(GetWorld(),BossOrigin-FVector(0,0,BossOrigin.Z-12),420,64,Color,false,-1,0,8,FVector::ForwardVector,FVector::RightVector,false);
+        else Lab::Arc(GetWorld(),BossOrigin,BossAim,280,70,Color);
+    }
+    if(Phase==0)
+    {
+        const FVector To=P->GetActorLocation()-GetActorLocation();
+        const int32 Next=To.Size2D()>600?1:BossAttackCount%3;
+        const float Range=Next==0?260.f:Next==1?1100.f:440.f;
+        if(To.Size2D()<=Range && Lab::Clear(this,P)) { BeginBossAttack(Next); return; }
+        FCollisionQueryParams Params; Params.AddIgnoredActor(this); FHitResult Obstacle;
+        for(float Angle:{0.f,45.f,-45.f,90.f,-90.f,135.f,-135.f})
+        {
+            const FVector Candidate=To.GetSafeNormal2D().RotateAngleAxis(Angle,FVector::UpVector);
+            if(!GetWorld()->SweepSingleByChannel(Obstacle,GetActorLocation(),GetActorLocation()+Candidate*110,FQuat::Identity,ECC_WorldStatic,FCollisionShape::MakeCapsule(35,80),Params))
+            { AddMovementInput(Candidate); SetActorRotation(Candidate.Rotation()); break; }
+        }
+    }
+    else if(Phase==1)
+    {
+        FVector Ground=BossOrigin; Ground.Z=12;
+        const float Progress=FMath::Clamp(float((T-BossTellStart)/FMath::Max(.01,Deadline-BossTellStart)),0.f,1.f);
+        if(BossAttack==0)
+        {
+            Lab::Arc(GetWorld(),BossOrigin,BossAim,280,70,Color);
+            Lab::Arc(GetWorld(),BossOrigin,BossAim,280*Progress,70,Color);
+        }
+        else if(BossAttack==1)
+        {
+            const FVector Side=FVector::CrossProduct(BossAim,FVector::UpVector)*90;
+            DrawDebugLine(GetWorld(),Ground+Side,Ground+BossAim*900+Side,Color,false,-1,0,5);
+            DrawDebugLine(GetWorld(),Ground-Side,Ground+BossAim*900-Side,Color,false,-1,0,5);
+            DrawDebugLine(GetWorld(),Ground+BossAim*900+Side,Ground+BossAim*900-Side,Color,false,-1,0,5);
+            DrawDebugDirectionalArrow(GetWorld(),Ground,Ground+BossAim*(100+800*Progress),35,Color,false,-1,0,5);
+        }
+        else
+        {
+            DrawDebugCircle(GetWorld(),Ground,420,64,Color,false,-1,0,5,FVector::ForwardVector,FVector::RightVector,false);
+            DrawDebugCircle(GetWorld(),Ground,420*Progress,48,Color,false,-1,0,4,FVector::ForwardVector,FVector::RightVector,false);
+        }
+        if(T>=Deadline) ResolveBossAttack();
+    }
+    else if(Phase==2)
+    {
+        const FVector Start=GetActorLocation();
+        const float Step=FMath::Min(BossDashRemaining,1500*Delta);
+        FHitResult Wall; SetActorLocation(Start+BossAim*Step,true,&Wall);
+        const FVector End=GetActorLocation(); BossDashRemaining=FMath::Max(0.f,BossDashRemaining-float(FVector::Dist2D(Start,End)));
+        // Swept distance avoids skipping the player during a slow frame.
+        const FVector Closest=FMath::ClosestPointOnSegment(P->GetActorLocation(),Start,End);
+        if(!bDashHit && FVector::Dist2D(Closest,P->GetActorLocation())<=90 && Lab::Clear(this,P))
+        { P->ReceiveHit(24); bDashHit=true; }
+        if(Wall.bBlockingHit || BossDashRemaining<=1 || T>=Deadline)
+        {
+            Phase=3; Deadline=T+(bEnraged?1.35:1.9); BossAttackCount=(BossAttack+1)%3;
+            GetCharacterMovement()->StopMovementImmediately();
+        }
+    }
+    else if(T>=Deadline) Phase=0;
+}
 void ACLEnemy::Tick(float Delta)
 {
     Super::Tick(Delta); ACLHero* P=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0)); if(HP<=0 || !P || P->HP<=0) { GetCharacterMovement()->StopMovementImmediately(); return; }
     const double T=Lab::Now(this); FVector To=P->GetActorLocation()-GetActorLocation();
-    Lab::Visual(this,Clips,Phase==1 && Kind!=1?2:Phase==2?1:GetVelocity().SizeSquared2D()>100?1:0,VisualState,Phase==1 && Kind!=1?(StrikeNumber==1?.6f:.75f):0);
+    if(!bBoss) Lab::Visual(this,Clips,Phase==1 && Kind!=1?2:Phase==2?1:GetVelocity().SizeSquared2D()>100?1:0,VisualState,Phase==1 && Kind!=1?(StrikeNumber==1?.6f:.75f):0);
     Lab::AlignBodyForward(GetMesh());
     if(T<DamageTextUntil) DrawDebugString(GetWorld(),DamageTextOrigin+FVector(0,0,130+(1-(DamageTextUntil-T)/.65)*65),FString::Printf(TEXT("-%.0f"),LastDamage),nullptr,FColor(255,220,100),0,true,1.3f);
     FColor C=Kind==2?FColor::Purple:Kind==1?FColor::Orange:FColor::Red;
@@ -582,6 +690,7 @@ void ACLEnemy::Tick(float Delta)
         DrawDebugString(GetWorld(),GetActorLocation()+FVector(0,0,Kind==2?150:110),FString::Printf(TEXT("%s %.0f/%.0f"),bBoss?TEXT("심연의 수문장"):Kind==2?TEXT("망령 지휘관"):Kind==1?TEXT("폭주 망령"):TEXT("망령 검병"),HP,MaxHP),nullptr,C,0,true);
     if(FParse::Param(FCommandLine::Get(),TEXT("AscensionCollisionView"))) DrawDebugBox(GetWorld(),GetActorLocation(),Kind==2?FVector(45,45,90):FVector(30,40,70),GetActorQuat(),C,false,-1,0,3);
     if(bFrozenForView) { ConsumeMovementInputVector(); GetCharacterMovement()->StopMovementImmediately(); return; }
+    if(bBoss) { TickBoss(Delta,P); Lab::AlignBodyForward(GetMesh()); return; }
     if(T<StaggerUntil)
     {
         ConsumeMovementInputVector(); GetCharacterMovement()->StopMovementImmediately();
@@ -633,7 +742,7 @@ void ACLEnemy::ReceiveHit(float Damage,FVector PushDirection)
 {
     if(HP<=0) return; HP=FMath::Max(0.f,HP-Damage);
     LastDamage=Damage; DamageTextUntil=Lab::Now(this)+.65; DamageTextOrigin=GetActorLocation();
-    if(HP>0)
+    if(HP>0 && !bBoss)
     {
         CustomTimeDilation=.18f;
         GetWorldTimerManager().SetTimer(ImpactPauseTimer,FTimerDelegate::CreateWeakLambda(this,[this]() { CustomTimeDilation=1.f; }),.045f,false);
@@ -754,6 +863,8 @@ void AAscensionMode::BeginPlay()
     Super::BeginPlay(); bVerify=FParse::Param(FCommandLine::Get(),TEXT("AscensionVerify")); bView=FParse::Param(FCommandLine::Get(),TEXT("AscensionView")) || FParse::Param(FCommandLine::Get(),TEXT("AscensionMotionView")) || FParse::Param(FCommandLine::Get(),TEXT("AscensionCombatView")) || FParse::Param(FCommandLine::Get(),TEXT("AscensionCombatFeelView")); bSpawnVerify=FParse::Param(FCommandLine::Get(),TEXT("AscensionSpawnVerify"));
     bSurvival=(!bVerify && !bView && !bSpawnVerify) || FParse::Param(FCommandLine::Get(),TEXT("AscensionSurvivalVerify")) || FParse::Param(FCommandLine::Get(),TEXT("AscensionCombatVerify")) || FParse::Param(FCommandLine::Get(),TEXT("AscensionCombatFeelView")) || FParse::Param(FCommandLine::Get(),TEXT("AscensionSurvivalView")) || FParse::Param(FCommandLine::Get(),TEXT("AscensionWaveView"));
     if(FParse::Param(FCommandLine::Get(),TEXT("AscensionHordeView")) || FParse::Param(FCommandLine::Get(),TEXT("AscensionFloorView"))) bView=bSurvival=true;
+    if(FParse::Param(FCommandLine::Get(),TEXT("AscensionBossVerify"))) bSurvival=true;
+    if(FParse::Param(FCommandLine::Get(),TEXT("AscensionBossView"))) bView=bSurvival=true;
     ResetSurvival(); SpawnEncounter(); NextCheck=Lab::Now(this)+1;
     if(bSurvival) if(ACLHero* P=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0))) P->Notice=TEXT("사냥하며 강화 → 중앙 제단 E로 수문장 소환 → 처치 후 중앙 E로 다음 층");
 }
@@ -792,6 +903,99 @@ void AAscensionMode::Tick(float Delta)
     ACLHero* P=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0));
     if(!P) { Check(false,TEXT("player_spawn")); FPlatformMisc::RequestExitWithStatus(false,1); return; }
     double T=Lab::Now(this);
+    if(bVerify && FParse::Param(FCommandLine::Get(),TEXT("AscensionBossVerify")))
+    {
+        if(VerifyStage==0)
+        {
+        for(TActorIterator<ACLEnemy> It(GetWorld());It;++It) It->Destroy();
+        P->DisableInput(Cast<APlayerController>(P->Controller));
+        P->LightningReady=P->BladeReady=T+1000; P->Armor=Lab::Item(1,0);
+        ACLEnemy* Boss=GetWorld()->SpawnActor<ACLEnemy>(FVector(0,0,100),FRotator::ZeroRotator);
+        if(!Boss) { Check(false,TEXT("boss_fixture_spawn")); FPlatformMisc::RequestExitWithStatus(false,1); return; }
+        Boss->Configure(2); Boss->bBoss=true; Boss->HP=Boss->MaxHP=300; Boss->SetActorTickEnabled(false);
+        const auto Place=[&](FVector PlayerAt,FVector BossAt=FVector(0,0,100))
+        {
+            P->HP=100; P->ImmuneEnd=0; P->SetActorLocation(PlayerAt); P->GetCharacterMovement()->StopMovementImmediately();
+            Boss->SetActorLocation(BossAt); Boss->GetCharacterMovement()->StopMovementImmediately(); Boss->Phase=0;
+        };
+        Place(FVector(220,0,100)); Boss->BeginBossAttack(0); const double TellEnd=Boss->Deadline;
+        Boss->Tick(.1f); Boss->ReceiveHit(5);
+        Check(P->HP==100 && Boss->Phase==1 && Boss->Deadline==TellEnd && Boss->CustomTimeDilation==1,TEXT("boss_tell_deals_no_early_damage_and_hits_cannot_delay_it"));
+        P->SetActorLocation(FVector(0,220,100)); Boss->Deadline=T-.01; Boss->Tick(.01f);
+        Check(P->HP==100 && Boss->Phase==3 && Boss->BossAim.Equals(FVector::ForwardVector),TEXT("cleave_locks_direction_and_side_step_avoids_damage"));
+        Place(FVector(220,0,100)); Boss->BeginBossAttack(0); Boss->ResolveBossAttack(); Boss->ResolveBossAttack();
+        Check(P->HP==80 && Boss->Phase==3 && Boss->Deadline>T+1.5,TEXT("cleave_hits_once_and_opens_counterattack_window"));
+        Place(FVector(220,0,100)); Boss->BeginBossAttack(0); P->SetActorLocation(FVector(-150,0,100)); Boss->ResolveBossAttack();
+        Check(P->HP==100,TEXT("cleave_rear_is_safe"));
+        Place(FVector(400,0,100)); Boss->BeginBossAttack(2); Boss->ResolveBossAttack();
+        Check(P->HP==72 && Boss->Phase==3,TEXT("slam_hits_inside_420cm"));
+        Place(FVector(430,0,100)); Boss->BeginBossAttack(2); Boss->ResolveBossAttack();
+        Check(P->HP==100,TEXT("slam_outside_ring_is_safe"));
+        Place(FVector(300,0,100)); Boss->BeginBossAttack(2); P->ImmuneEnd=T+1; Boss->ResolveBossAttack();
+        Check(P->HP==100 && P->PerfectUntil>T,TEXT("boss_slam_respects_dodge_invulnerability"));
+        Place(FVector(600,0,100)); Boss->BeginBossAttack(1); P->SetActorLocation(FVector(0,400,100)); Boss->ResolveBossAttack();
+        Boss->Tick(.2f); const float Travel=Boss->GetActorLocation().X; Boss->Tick(1.f);
+        Check(P->HP==100 && Travel>250 && Boss->GetActorLocation().X<=901 && FMath::Abs(Boss->GetActorLocation().Y)<1 && Boss->Phase==3,TEXT("charge_commits_to_lane_caps_distance_and_recovers"));
+        Place(FVector(400,0,100)); Boss->BeginBossAttack(1); Boss->ResolveBossAttack(); Boss->Tick(.4f); Boss->Tick(.1f);
+        Check(P->HP==76,TEXT("charge_sweeps_player_during_large_frame_and_hits_once"));
+        Place(FVector(ArenaHalfWidth-100,500,100),FVector(ArenaHalfWidth-100,0,100));
+        Boss->BeginBossAttack(1); Boss->BossAim=FVector::ForwardVector; Boss->ResolveBossAttack(); Boss->Tick(.4f);
+        Check(Boss->GetActorLocation().X<=ArenaHalfWidth-34 && Boss->Phase==3 && P->HP==100,TEXT("boss_charge_stops_at_arena_wall"));
+        Place(FVector(220,0,100)); Boss->HP=150; Boss->Phase=3; Boss->Deadline=T+10; Boss->Tick(.01f);
+        Boss->BeginBossAttack(0); const double EnragedTell=Boss->Deadline-T; Boss->ResolveBossAttack();
+        Check(Boss->bEnraged && EnragedTell>=.85 && EnragedTell<1.05 && Boss->Deadline>T+1.1 && Boss->Deadline<T+1.2,TEXT("half_health_enrage_shortens_future_tells_and_recovery"));
+        Place(FVector(0,600,100)); Boss->BossAttackCount=1; Boss->Tick(.01f);
+        Check(Boss->Phase==1 && Boss->BossAttack==1,TEXT("boss_selects_charge_after_cleave"));
+        Place(FVector(400,0,100)); Boss->BossAttackCount=2; Boss->Tick(.01f);
+        Check(Boss->Phase==1 && Boss->BossAttack==2,TEXT("boss_selects_slam_after_charge"));
+        Place(FVector(900,0,100)); Boss->BossAttackCount=0; Boss->Tick(.01f);
+        Check(Boss->Phase==1 && Boss->BossAttack==1,TEXT("boss_uses_charge_against_ranged_kiting"));
+        bBossSpawned=true; Boss->ReceiveHit(10000);
+        Check(bBossDefeated && Boss->IsActorBeingDestroyed(),TEXT("pattern_boss_death_still_unlocks_floor_exit"));
+        P->Skip();
+        // Also exercise the normal frame loop, without forcing a deadline or attack.
+        P->HP=100; P->ImmuneEnd=0; P->SetActorLocation(FVector(900,0,100));
+        VerifyEnemy=GetWorld()->SpawnActor<ACLEnemy>(FVector(0,0,100),FRotator::ZeroRotator);
+        if(!VerifyEnemy) { Check(false,TEXT("timed_boss_spawn")); FPlatformMisc::RequestExitWithStatus(false,1); return; }
+        VerifyEnemy->Configure(2); VerifyEnemy->bBoss=true; VerifyEnemy->HP=VerifyEnemy->MaxHP=300;
+        VerifyStage=1; NextCheck=T+.3; return;
+        }
+        if(VerifyStage==1)
+        {
+            Check(VerifyEnemy->Phase==1 && VerifyEnemy->BossAttack==1 && P->HP==100,TEXT("live_boss_waits_in_telegraph_before_charge"));
+            P->SetActorLocation(FVector(0,450,100)); VerifyStage=2; NextCheck=T+2; return;
+        }
+        Check(VerifyEnemy->Phase==3 && VerifyEnemy->GetActorLocation().X>650 && VerifyEnemy->GetActorLocation().X<=910 && FMath::Abs(VerifyEnemy->GetActorLocation().Y)<20 && P->HP==100,TEXT("live_boss_charge_commits_after_tell_then_enters_recovery"));
+        UE_LOG(LogTemp,Display,TEXT("ASCENSION_BOSS_VERIFY %s"),bFailed?TEXT("FAIL"):TEXT("PASS"));
+        FPlatformMisc::RequestExitWithStatus(false,bFailed?1:0); return;
+    }
+    if(bView && FParse::Param(FCommandLine::Get(),TEXT("AscensionBossView")))
+    {
+        if(VerifyStage==0)
+        {
+            for(TActorIterator<ACLEnemy> It(GetWorld());It;++It) It->Destroy();
+            P->DisableInput(Cast<APlayerController>(P->Controller)); P->SetActorLocation(FVector(-500,-450,100));
+            P->Controller->SetControlRotation(FRotator(-40,45,0)); P->Arm->TargetArmLength=1100;
+            P->LightningReady=P->BladeReady=T+1000; P->ImmuneEnd=T+1000;
+            VerifyEnemy=GetWorld()->SpawnActor<ACLEnemy>(FVector(0,0,100),FRotator::ZeroRotator);
+            if(!VerifyEnemy) { Check(false,TEXT("boss_view_spawn")); FPlatformMisc::RequestExitWithStatus(false,1); return; }
+            VerifyEnemy->Configure(2); VerifyEnemy->bBoss=true; VerifyEnemy->HP=VerifyEnemy->MaxHP=300;
+            bBossSpawned=true; VerifyEnemy->BeginBossAttack(0); VerifyStage=1; NextCheck=T+.45;
+        }
+        else if(VerifyStage==1 || VerifyStage==3 || VerifyStage==5)
+        {
+            const TCHAR* Name=VerifyStage==1?TEXT("BossCleave.png"):VerifyStage==3?TEXT("BossCharge.png"):TEXT("BossSlamEnraged.png");
+            FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir()/Name,true,false); ++VerifyStage; NextCheck=T+.2;
+        }
+        else if(VerifyStage==2 || VerifyStage==4)
+        {
+            VerifyEnemy->SetActorLocation(FVector(0,0,100));
+            if(VerifyStage==4) { VerifyEnemy->HP=140; VerifyEnemy->bEnraged=true; }
+            VerifyEnemy->BeginBossAttack(VerifyStage==2?1:2); ++VerifyStage; NextCheck=T+.55;
+        }
+        else { UE_LOG(LogTemp,Display,TEXT("ASCENSION_BOSS_VIEW %s"),bFailed?TEXT("FAIL"):TEXT("PASS")); FPlatformMisc::RequestExitWithStatus(false,bFailed?1:0); }
+        return;
+    }
     if(bView && FParse::Param(FCommandLine::Get(),TEXT("AscensionFloorView")))
     {
         if(VerifyStage==0)
@@ -965,8 +1169,9 @@ void AAscensionMode::Tick(float Delta)
             Check(VerifyEnemy->GetActorLocation().X>=ArenaHalfWidth-40 && VerifyEnemy->GetActorLocation().X<=ArenaHalfWidth-34.8f,TEXT("knockback_sweep_stops_at_wall"));
             VerifyEnemy->bFrozenForView=true; VerifyEnemy->Configure(2); VerifyEnemy->Phase=1; VerifyEnemy->ReactionReady=0; VerifyEnemy->ReceiveHit(10);
             Check(VerifyEnemy->Phase==1 && FMath::IsNearlyEqual(float(VerifyEnemy->StaggerUntil-T),.08f),TEXT("elite_has_short_reaction_preserves_attack"));
-            VerifyEnemy->bBoss=true; VerifyEnemy->ReactionReady=0; VerifyEnemy->ReceiveHit(10);
-            Check(VerifyEnemy->Phase==1 && FMath::IsNearlyEqual(float(VerifyEnemy->StaggerUntil-T),.04f),TEXT("boss_resists_stagger"));
+            VerifyEnemy->bBoss=true; VerifyEnemy->StaggerUntil=0; VerifyEnemy->ReactionReady=0;
+            const double BossDeadline=VerifyEnemy->Deadline; VerifyEnemy->ReceiveHit(10);
+            Check(VerifyEnemy->Phase==1 && VerifyEnemy->StaggerUntil==0 && VerifyEnemy->Deadline==BossDeadline,TEXT("boss_hits_preserve_telegraph_timing"));
             P->Heavy(); P->ToggleInventory(); P->ReleaseHeavy(); Check(!P->IsCharging() && P->bInventoryOpen && P->bResolved,TEXT("inventory_cancels_charge_without_shot")); P->ToggleInventory();
             P->Heavy(); P->GainExperience(25); P->ReleaseHeavy(); Check(!P->IsCharging() && P->bLevelChoice && P->bResolved,TEXT("levelup_cancels_charge_while_paused")); P->Choose(0);
             const double PreviousAttackStart=P->AttackStart,PreviousAttackEnd=P->AttackEnd;
@@ -1552,7 +1757,7 @@ void ACLHUD::DrawHUD()
     DrawText(Mode && Mode->bSurvival?TEXT("WASD 이동 · 좌클릭 검기 · 우클릭 누르기: 충전 / 놓기: 발사 · Space 회피"):TEXT("WASD 이동 · 마우스 시점 · 좌클릭 검 공격 · 우클릭 강공격 · Space 회피"),FLinearColor::White,25,74);
     if(P->IsCharging())
     {
-        const float X=Canvas->SizeX*.5f-145,Y=Canvas->SizeY*.5f+65,Charge=P->ChargeProgress();
+        const float X=Canvas->SizeX*.5f-145,Y=FMath::Min(Canvas->SizeY*.5f+65,Canvas->SizeY-250.f),Charge=P->ChargeProgress();
         DrawRect(FLinearColor(0,0,0,.85f),X-8,Y-45,306,69);
         const bool Ready=P->CanReleaseHeavy();
         DrawText(!Ready?TEXT("최소 0.6초 충전 필요 · 지금 놓으면 취소"):(Charge>=1?TEXT("최대 충전 · 놓으면 발사"):TEXT("발사 가능 · 더 모으면 피해와 범위 증가")),Ready?FLinearColor(1,.8f,.2f):FLinearColor(.7f,.8f,1.f),X,Y-42);
@@ -1567,11 +1772,12 @@ void ACLHUD::DrawHUD()
     if(Mode && Mode->bSurvival && P->Offers.IsEmpty())
         for(TActorIterator<ACLEnemy> It(GetWorld());It;++It) if(It->bBoss && It->HP>0)
         {
-            const float X=Canvas->SizeX*.5f-210,Y=214;
-            DrawRect(FLinearColor(0,0,0,.85f),X-8,Y-4,436,49);
-            DrawText(FString::Printf(TEXT("%d층 중앙 수문장 · %.0f / %.0f"),Mode->CurrentFloor,It->HP,It->MaxHP),FLinearColor(1,.75f,.3f),X,Y);
+            const float X=Canvas->SizeX*.5f-210,Y=Canvas->SizeY-205.f;
+            DrawRect(FLinearColor(0,0,0,.85f),X-8,Y-4,436,76);
+            DrawText(FString::Printf(TEXT("%d층 중앙 수문장%s · %.0f / %.0f"),Mode->CurrentFloor,It->bEnraged?TEXT(" [격노]"):TEXT(""),It->HP,It->MaxHP),FLinearColor(1,.75f,.3f),X,Y);
             DrawRect(FLinearColor(.25f,.12f,.1f),X,Y+25,420,10);
-            DrawRect(FLinearColor(.9f,.28f,.12f),X,Y+25,420*FMath::Clamp(It->HP/It->MaxHP,0.f,1.f),10); break;
+            DrawRect(FLinearColor(.9f,.28f,.12f),X,Y+25,420*FMath::Clamp(It->HP/It->MaxHP,0.f,1.f),10);
+            DrawText(It->BossHint(),It->Phase==3?FLinearColor(.3f,1.f,.6f):FLinearColor(1,.8f,.4f),X,Y+45); break;
         }
     DrawText(P->Notice,FLinearColor::Yellow,25,123);
     FString Owned=TEXT("보유 각성: "); if(P->Awakenings.IsEmpty()) Owned+=TEXT("없음");

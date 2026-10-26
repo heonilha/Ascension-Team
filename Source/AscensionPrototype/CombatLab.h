@@ -152,9 +152,19 @@ public:
     double AlertUntil = 0;
     bool bFrozenForView = false;
     bool bBoss = false;
+    // 0: frontal cleave, 1: committed charge, 2: radial slam.
+    int32 BossAttack = 0, BossAttackCount = 0;
+    bool bEnraged = false;
+    FVector BossAim = FVector::ForwardVector, BossOrigin = FVector::ZeroVector;
+    double BossTellStart = 0, BossImpactUntil = 0;
+    float BossDashRemaining = 0;
+    void BeginBossAttack(int32 Pattern);
+    void ResolveBossAttack();
+    const TCHAR* BossHint() const;
     double StaggerUntil = 0, ReactionReady = 0;
     UPROPERTY() TObjectPtr<UStaticMeshComponent> Body;
 private:
+    void TickBoss(float Delta, ACLHero* Player);
     void BeginTell(); void Strike();
     UPROPERTY() TObjectPtr<UStaticMeshComponent> Sword;
     FVector Direction;
