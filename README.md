@@ -1,6 +1,8 @@
 # AscensionPrototype
 
-개발 저장소: [GitHub · AscensionPrototype](https://github.com/kimminseoung-source/AscensionPrototype) (비공개). 기능별 한국어 커밋과 개발 기록을 관리한다.
+팀 개발 저장소: [GitHub · Ascension-Team](https://github.com/kimminseoung-source/Ascension-Team) (비공개). 기능별 한국어 커밋과 개발 기록을 관리한다. [팀 공동 작업 안내](Docs/팀_공동작업_안내.md)를 먼저 읽는다.
+
+기존 데모 보관 저장소: [AscensionPrototype](https://github.com/kimminseoung-source/AscensionPrototype). 2026-10-27 분리 시점의 39개 커밋과 최신 보스 개선(91fc34c)을 보관한다. 이후 공동 개발은 Ascension-Team에서 진행한다. 언리얼 프로젝트 이름과 모듈 이름은 AscensionPrototype을 유지한다.
 
 새로운 3인칭 검 액션·각성 전투 프로토타입. 기존 TowerDemo와 별개의 프로젝트다.
 
