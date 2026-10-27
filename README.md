@@ -82,3 +82,7 @@ PowerShell에서 이 프로젝트 폴더 기준으로:
 
 
 
+
+## AI 개발 지원 표기
+
+이 프로젝트는 OpenAI Codex의 도움을 받아 개발한다. 사용자의 요청으로 이후 Codex가 실질적으로 참여한 커밋에 `Co-authored-by: Codex <codex@openai.com>`을 기록한다. 이는 GitHub의 공동 작성자 표시이며 저장소 접근 권한을 부여하지 않는다. 추가·중단 방법은 [AI 공동 작성 표기 안내](Docs/AI_공동작성_표기.md)를 참고한다.

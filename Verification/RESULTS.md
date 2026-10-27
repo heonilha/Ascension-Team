@@ -51,3 +51,5 @@ BladeWave.png 실제 렌더링에서 이동 중 청록색 검기와 체력/경�
 최종 소스로 Scripts/VerifyCombat.ps1의 CombatFeel.log ASCENSION_COMBAT_VERIFY PASS(단일대상/관통성장/충전/실제추적/넉백/취소/사망, 보스 피격 시 예고 유지), Scripts/VerifySurvival.ps1의 Survival.log ASCENSION_SURVIVAL_VERIFY PASS(중앙소환/보스단일생성/2층/휴식/성장·장비유지/고정체력) 확인. Scripts/VerifyBoss.ps1 -View / BossView.log ASCENSION_BOSS_VIEW PASS. BossCleave.png, BossCharge.png, BossSlamEnraged.png의 부채꼴/직선/원형 바닥 예고와 하단 체력바·한국어 회피 안내·격노 표시를 직접 확인했다. 화면용 위치와 패턴·체력은 검증 목적으로 설정하며, 피격 무적을 사용해 세 장면을 저장한다. 실제 조작 난이도/장시간 성능 검증을 뜻하지 않는다. 전용 모션/최종 이펙트/효과음은 후속 작업이다. Meshy 추가 사용0, 추가 결제0.
 
 2026-10-27 팀 저장소 분리 검증: 새 비공개 kimminseoung-source/Ascension-Team의 최초 main은91fc34c37cd5fc9f817ecb035f9f44f15ccb5fd5로 기존 로컬 HEAD와 일치한다. 기존39개 커밋의 이력을 재작성하지 않고 Push했다. 원래 저장소는 보존하고 로컬 origin은 팀 저장소로 전환했다. 게임 코드/에셋 수정이 없는 저장소·문서 작업이므로 빌드/전투 시험은 재실행하지 않았다. 팀원 PC에서 실행한 검증을 의미하지 않는다.
+
+2026-10-27 공동 작성 표기: OpenAI 공개 저장소의 실제 Codex 공동 작성 커밋과 표기 예시, GitHub 트레일러 설명을 확인했다. 문서 및 작업 규칙만 변경했으며 git diff --check로 형식을 검사한다. 게임 코드·에셋 변경이 없어 빌드·전투 검사는 재실행하지 않는다. 커밋 작성 후 트레일러 파싱과 원격 업로드를 확인하며 과거 이력을 재작성하지 않는다.
