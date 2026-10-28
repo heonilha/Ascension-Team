@@ -872,7 +872,8 @@ void AAscensionMode::BeginPlay()
     if(bSurvival) if(ACLHero* P=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0))) P->Notice=TEXT("사냥하며 강화 → 중앙 제단 E로 수문장 소환 → 처치 후 중앙 E로 다음 층");
     if(bOnline)
     {
-        FString Name=FPlatformProcess::ComputerName(); FParse::Value(FCommandLine::Get(),TEXT("AscensionName="),Name);
+        // 이름을 안 주면 "컴퓨터이름-프로세스번호": 한 PC에서 클라이언트 여러 개를 띄워도 구분된다
+        FString Name=FString::Printf(TEXT("%s-%u"),FPlatformProcess::ComputerName(),FPlatformProcess::GetCurrentProcessId()); FParse::Value(FCommandLine::Get(),TEXT("AscensionName="),Name);
         uint32 Team=1; FParse::Value(FCommandLine::Get(),TEXT("AscensionTeam="),Team);
         Net=GetWorld()->SpawnActor<ACLNetSession>();
         if(Net) Net->Connect(ServerAddress,Name,Team);
