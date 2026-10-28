@@ -11,6 +11,7 @@ class UStaticMeshComponent;
 class ACLEnemy;
 class ACLHero;
 class UAnimSequence;
+class ACLNetSession;
 
 USTRUCT()
 struct FCLItem
@@ -70,6 +71,7 @@ public:
     void ResetLife();
     void Attack(); void Heavy(); void ReleaseHeavy(); void Dodge(); void Skill(); void ToggleLock();
     bool IsCharging() const { return bCharging; }
+    int32 GetVisualState() const { return VisualState; } // 네트워크로 보내는 애니메이션 상태
     float ChargeProgress() const;
     static constexpr double MinimumChargeSeconds = .6;
     static constexpr double MaximumChargeSeconds = 3.0;
@@ -195,6 +197,9 @@ public:
     bool bSurvival = false, bBossSpawned = false, bBossDefeated = false, bVictory = false;
     int32 CurrentFloor = 1;
     bool bRestArea = false;
+    // 온라인 P0(-AscensionServer=IP:포트): 서버와 이동만 동기화하고 몬스터는 만들지 않는다.
+    bool bOnline = false;
+    UPROPERTY() TObjectPtr<ACLNetSession> Net;
     void SummonGatekeeper();
     void AdvanceFloor();
     double SurvivalStart = 0, ReinforcementReady = 0, EliteReady = 0;

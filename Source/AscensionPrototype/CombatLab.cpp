@@ -1,5 +1,6 @@
 #include "CombatLab.h"
 #include "HeroMotion.h"
+#include "CLNetSession.h"
 #include "Camera/CameraComponent.h"
 #include "GameFramework/SpringArmComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
@@ -865,8 +866,18 @@ void AAscensionMode::BeginPlay()
     if(FParse::Param(FCommandLine::Get(),TEXT("AscensionHordeView")) || FParse::Param(FCommandLine::Get(),TEXT("AscensionFloorView"))) bView=bSurvival=true;
     if(FParse::Param(FCommandLine::Get(),TEXT("AscensionBossVerify"))) bSurvival=true;
     if(FParse::Param(FCommandLine::Get(),TEXT("AscensionBossView"))) bView=bSurvival=true;
+    FString ServerAddress;
+    bOnline=!bVerify && !bView && !bSpawnVerify && FParse::Value(FCommandLine::Get(),TEXT("AscensionServer="),ServerAddress);
     ResetSurvival(); SpawnEncounter(); NextCheck=Lab::Now(this)+1;
     if(bSurvival) if(ACLHero* P=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0))) P->Notice=TEXT("사냥하며 강화 → 중앙 제단 E로 수문장 소환 → 처치 후 중앙 E로 다음 층");
+    if(bOnline)
+    {
+        FString Name=FPlatformProcess::ComputerName(); FParse::Value(FCommandLine::Get(),TEXT("AscensionName="),Name);
+        uint32 Team=1; FParse::Value(FCommandLine::Get(),TEXT("AscensionTeam="),Team);
+        Net=GetWorld()->SpawnActor<ACLNetSession>();
+        if(Net) Net->Connect(ServerAddress,Name,Team);
+        if(ACLHero* P=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0))) P->Notice=TEXT("온라인 P0: 같은 팀 코드로 접속한 플레이어와 함께 이동합니다. 몬스터는 서버 이전 후 추가됩니다.");
+    }
 }
 void AAscensionMode::Check(bool Condition,const TCHAR* Name)
 {
@@ -876,7 +887,7 @@ void AAscensionMode::Check(bool Condition,const TCHAR* Name)
 void AAscensionMode::Tick(float Delta)
 {
     Super::Tick(Delta);
-    if(bSurvival && !bVerify && !bView) TickSurvival();
+    if(bSurvival && !bVerify && !bView && !bOnline) TickSurvival();
     if(bView && FParse::Param(FCommandLine::Get(),TEXT("AscensionFloorView"))) TickSurvival();
     if(!bSurvival && !bVerify && !bView && !bSpawnVerify && !bEncounterCleared && SpawnedEnemies>0 && RemainingEnemies()==0)
     {
@@ -1626,6 +1637,7 @@ void AAscensionMode::ResetSurvival()
 void AAscensionMode::SummonGatekeeper()
 {
     ACLHero* P=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0));
+    if(bOnline) { if(P) P->Notice=TEXT("온라인 P0에는 아직 수문장이 없습니다. 몬스터·보스는 서버 이전 후 추가됩니다."); return; }
     if(!P || P->HP<=0 || !bSurvival || bRestArea || bBossDefeated || FVector::Dist2D(P->GetActorLocation(),FVector::ZeroVector)>=300) return;
     if(bBossSpawned) { P->Notice=TEXT("수문장과 전투 중입니다. 처치해야 중앙 출구가 열립니다."); return; }
     SpawnSurvivalBatch(1,false,true);
@@ -1677,6 +1689,7 @@ void AAscensionMode::TickSurvival()
 }
 void AAscensionMode::SpawnSurvivalBatch(int32 Count,bool Elite,bool Boss)
 {
+    if(bOnline) return;
     ACLHero* P=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0)); if(!P || P->HP<=0 || bRestArea || (Boss && bBossSpawned)) return;
     if(Boss) Count=FMath::Min(Count,1);
     for(int32 I=0;I<Count;++I)
@@ -1703,6 +1716,7 @@ void AAscensionMode::SpawnSurvivalBatch(int32 Count,bool Elite,bool Boss)
 }
 void AAscensionMode::SpawnEncounter(int32 Seed)
 {
+    if(bOnline) return; // 온라인 P0: 몬스터는 서버가 관리하기 전까지 만들지 않는다
     TArray<ACLEnemy*> Existing; for(TActorIterator<ACLEnemy> It(GetWorld());It;++It) Existing.Add(*It);
     for(ACLEnemy* Enemy:Existing) { Enemy->SetActorEnableCollision(false); Enemy->Destroy(); }
     bEncounterCleared=false; SpawnedEnemies=0;
@@ -1745,6 +1759,7 @@ void ACLHUD::DrawHUD()
     DrawRect(Lab::Now(P)<P->HurtUntil?FLinearColor::White:Health<=.3f?FLinearColor(.9f,.12f,.1f):FLinearColor(.12f,.8f,.65f),BarX,BarY,BarWidth*Health,16);
     DrawRect(FLinearColor(0,0,0,.75f),12,12,FMath::Min(1000.f,Canvas->SizeX-24.f),190);
     AAscensionMode* Mode=Cast<AAscensionMode>(GetWorld()->GetAuthGameMode());
+    if(Mode && IsValid(Mode->Net)) DrawText(Mode->Net->StatusText(),FLinearColor(.55f,.85f,1.f),BarX-12,BarY-58,nullptr,1.f);
     if(Mode && Mode->bSurvival)
     {
         const int32 Seconds=int32(Mode->SurvivalElapsed());
