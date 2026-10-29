@@ -53,3 +53,11 @@ BladeWave.png 실제 렌더링에서 이동 중 청록색 검기와 체력/경�
 2026-10-27 팀 저장소 분리 검증: 새 비공개 kimminseoung-source/Ascension-Team의 최초 main은91fc34c37cd5fc9f817ecb035f9f44f15ccb5fd5로 기존 로컬 HEAD와 일치한다. 기존39개 커밋의 이력을 재작성하지 않고 Push했다. 원래 저장소는 보존하고 로컬 origin은 팀 저장소로 전환했다. 게임 코드/에셋 수정이 없는 저장소·문서 작업이므로 빌드/전투 시험은 재실행하지 않았다. 팀원 PC에서 실행한 검증을 의미하지 않는다.
 
 2026-10-27 공동 작성 표기: OpenAI 공개 저장소의 실제 Codex 공동 작성 커밋과 표기 예시, GitHub 트레일러 설명을 확인했다. 문서 및 작업 규칙만 변경했으며 git diff --check로 형식을 검사한다. 게임 코드·에셋 변경이 없어 빌드·전투 검사는 재실행하지 않는다. 커밋 작성 후 트레일러 파싱과 원격 업로드를 확인하며 과거 이력을 재작성하지 않는다.
+
+2026-10-29 온라인 P0 Windows 접속 검증(feature/network-p0, 46e24a2): UE 5.8.3 Build.bat으로 AscensionPrototypeEditor Win64 Development 빌드 성공(152초, 컴파일 에러 0, CombatLab.cpp double→float 경고 C4305 5개는 기존 코드). 서버(Ascension-Server 5423c34)는 WSL Ubuntu 24.04·GCC 14.2·Ninja로 debug 프리셋 빌드 성공, 경고 0. 서버 원본과 클라이언트 AscensionProtocol.h 사본 동일(kVersion 1). 서버를 포트 7777·스레드 4로 실행하고 UnrealEditor-Cmd -game -nullrhi로 ue1(팀 1)을 127.0.0.1:7777에 접속한 뒤 봇 1개(--bots 1 --team-base 1 --seconds 10)를 같은 방에 붙였다.
+
+- 클라이언트 로그: ASCENSION_NET_CONNECT, ASCENSION_NET_ENTER team=1 id=2 others=0 확인, ASCENSION_NET_FAILED 0회. 봇 입장 시점에 원격 플레이어 모델 로드(ASCENSION_MODEL_LOADED clips=5/5)가 한 번 더 찍혀 원격 캐릭터 생성을 확인했다.
+- 서버 로그: "방 1 입장" 2회(ue1 슬롯 0, bot-0 슬롯 1, 인원 2/3), "이동 거부" 0회. 세션 1은 포트 확인용 연결로 로그인 전에 종료됐다.
+- 판정: 요청 기준(ENTER 있음·FAILED 없음·입장 2회·이동 거부 없음) PASS.
+- 봇 자체 결과는 FAIL(`다른 봇 이동 1/0`)이다. 봇은 같은 방의 다른 봇 수만 기대값으로 계산하므로 언리얼 클라이언트의 이동을 받으면 불일치로 판정한다. 봇이 ue1의 이동을 받았다는 뜻이며 보정 0회·RTT 1ms였다. 사람 클라이언트와 섞어 시험할 때 봇 기준을 조정할지는 서버 쪽에서 정해야 한다.
+- 한계: 화면 없는 클라이언트 1개와 봇 1개 시험이다. 렌더링 화면의 HUD·원격 캐릭터 보간 모습, 실제 클라이언트 2개 접속, 다른 PC 접속은 확인하지 않았다. 원본 로그는 Git에 넣지 않았다.
