@@ -67,6 +67,10 @@ public:
     virtual void Tick(float Delta) override;
     virtual void SetupPlayerInputComponent(UInputComponent* Input) override;
     void ReceiveHit(float Damage);
+    // 온라인: 서버가 확정한 판정을 반영한다. 회피 무적은 서버가 이미 판정했으므로 여기서 다시 보지 않는다.
+    void ApplyServerHit(bool bDodged, float Damage, int32 RewindMs);
+    // 회피 무적 시간. 온라인에서는 서버가 알려 준 방 모드 규칙(PvE 0.15초, PvP 0.30초)으로 바뀐다.
+    double ImmuneDuration = .15;
     void OfferAwakening();
     void ResetLife();
     void Attack(); void Heavy(); void ReleaseHeavy(); void Dodge(); void Skill(); void ToggleLock();

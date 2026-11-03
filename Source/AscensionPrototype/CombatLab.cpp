@@ -40,6 +40,12 @@ namespace Lab
         if(I.Kind==0) return I.Tier==2?TEXT("묵직한 검 (+8 피해)"):I.Tier==1?TEXT("예리한 검 (+4 피해)"):TEXT("기본 검");
         return I.Tier==1?TEXT("철제 방어구 (피해 -3)"):TEXT("기본 방어구");
     }
+    // 온라인 모드이고 서버 연결 액터가 있으면 그 액터, 아니면 nullptr(1인 데모)
+    ACLNetSession* OnlineSession(const AActor* Actor)
+    {
+        const AAscensionMode* Mode=Actor->GetWorld()?Cast<AAscensionMode>(Actor->GetWorld()->GetAuthGameMode()):nullptr;
+        return Mode && Mode->bOnline && IsValid(Mode->Net)?Mode->Net.Get():nullptr;
+    }
     bool SetModel(ACharacter* Character,TArray<TObjectPtr<UAnimSequence>>& Clips,bool Monster=false)
     {
         USkeletalMesh* Model=LoadObject<USkeletalMesh>(nullptr,Monster?TEXT("/Game/Models/UndeadSentinel/UndeadSentinelRig.UndeadSentinelRig"):TEXT("/Game/Models/SharedKnightRig.SharedKnightRig"));
@@ -297,6 +303,7 @@ void ACLHero::StartAttack(bool HeavyAttack)
     bEmpowered=T<PerfectUntil; PerfectUntil=0;
     AttackStart=T; HitTime=T+(bHeavy?.46:.28);
     AttackEnd=T+(bHeavy?.95:.68)+(bHeavy && HasAwakening(4)?.45:0); bResolved=false;
+    if(ACLNetSession* Net=Lab::OnlineSession(this)) Net->SendAttack(float(GetControlRotation().Yaw)); // PvP 방에서만 서버가 판정한다
     if(!UsesBladeWave()) { ConsumeMovementInputVector(); GetCharacterMovement()->StopMovementImmediately(); }
     VisualState=-1;
     SwingDirection=FRotator(0,GetControlRotation().Yaw,0).Vector(); SetActorRotation(SwingDirection.Rotation());
@@ -385,8 +392,9 @@ void ACLHero::Dodge()
     DashDirection=(CameraAxes.GetUnitAxis(EAxis::X)*MoveForward+CameraAxes.GetUnitAxis(EAxis::Y)*MoveRight).GetSafeNormal2D();
     if(DashDirection.IsNearlyZero()) DashDirection=FRotator(0,GetControlRotation().Yaw,0).Vector();
     ConsumeMovementInputVector(); GetCharacterMovement()->StopMovementImmediately();
-    DodgeStart=T; DodgeProgress=0; DodgeEnd=T+.65; ImmuneEnd=T+.15; DodgeReady=T+1.0;
+    DodgeStart=T; DodgeProgress=0; DodgeEnd=T+.65; ImmuneEnd=T+ImmuneDuration; DodgeReady=T+1.0;
     SetActorRotation(DashDirection.Rotation()); VisualState=-1;
+    if(ACLNetSession* Net=Lab::OnlineSession(this)) Net->SendDodge(float(DashDirection.Rotation().Yaw)); // 서버가 누른 시각으로 무적 판정
     if(HasAwakening(3))
     {
         FVector P=GetActorLocation(); DrawDebugSphere(GetWorld(),P,260,24,FColor::Orange,false,1,0,3);
@@ -405,6 +413,20 @@ void ACLHero::Skill()
     SkillReady=T+(HasAwakening(5)?4:6); float Range=HasAwakening(2)?440:320;
     DrawDebugSphere(GetWorld(),GetActorLocation(),Range,32,FColor::Cyan,false,.35,0,3);
     for(TActorIterator<ACLEnemy> It(GetWorld());It;++It) if(It->HP>0 && FVector::DistSquared(GetActorLocation(),It->GetActorLocation())<=FMath::Square(Range) && Lab::Clear(this,*It)) It->ReceiveHit(25);
+}
+void ACLHero::ApplyServerHit(bool bDodged,float Damage,int32 RewindMs)
+{
+    if(HP<=0) return;
+    if(bDodged)
+    {
+        PerfectUntil=Lab::Now(this)+2;
+        Notice=FString::Printf(TEXT("정확한 회피! (서버 판정 · 입력 %dms 되감음) 2초 안에 공격하면 반격 피해가 증가합니다."),RewindMs);
+        return;
+    }
+    // 로컬 무적 판정을 건너뛰고 서버가 정한 피해를 그대로 받는다. ReceiveHit이 방어구 감소를 빼므로 미리 더한다.
+    const double SavedImmune=ImmuneEnd; ImmuneEnd=0;
+    ReceiveHit(Damage+ArmorReduction());
+    ImmuneEnd=SavedImmune;
 }
 void ACLHero::ReceiveHit(float Damage)
 {
@@ -875,9 +897,12 @@ void AAscensionMode::BeginPlay()
         // 이름을 안 주면 "컴퓨터이름-프로세스번호": 한 PC에서 클라이언트 여러 개를 띄워도 구분된다
         FString Name=FString::Printf(TEXT("%s-%u"),FPlatformProcess::ComputerName(),FPlatformProcess::GetCurrentProcessId()); FParse::Value(FCommandLine::Get(),TEXT("AscensionName="),Name);
         uint32 Team=1; FParse::Value(FCommandLine::Get(),TEXT("AscensionTeam="),Team);
+        FString RoomMode=TEXT("pve"); FParse::Value(FCommandLine::Get(),TEXT("AscensionMode="),RoomMode); // pve | pvp
+        const bool bPvp=RoomMode.Equals(TEXT("pvp"),ESearchCase::IgnoreCase);
         Net=GetWorld()->SpawnActor<ACLNetSession>();
-        if(Net) Net->Connect(ServerAddress,Name,Team);
-        if(ACLHero* P=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0))) P->Notice=TEXT("온라인 P0: 같은 팀 코드로 접속한 플레이어와 함께 이동합니다. 몬스터는 서버 이전 후 추가됩니다.");
+        if(Net) Net->Connect(ServerAddress,Name,Team,bPvp);
+        if(ACLHero* P=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0)))
+            P->Notice=bPvp?TEXT("온라인 PvP 시험: 공격·회피를 서버가 판정합니다."):TEXT("온라인: 같은 팀 코드로 접속한 플레이어와 함께 이동합니다. 몬스터는 서버 이전 후 추가됩니다.");
     }
 }
 void AAscensionMode::Check(bool Condition,const TCHAR* Name)

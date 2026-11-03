@@ -2,10 +2,12 @@
 # Example:
 #   .\Scripts\OpenOnline.ps1 -BuildRoot D:\Builds\AscensionPrototype -Name player1 -Team 1
 #   Run it again with another -Name to open a second client on the same PC.
+#   -Mode pvp joins the PvP stage room (server-judged attacks and dodges, 0.30 s dodge invulnerability).
 param(
     [string]$Server = '127.0.0.1:7777',
     [string]$Name = $env:USERNAME,
     [int]$Team = 1,
+    [ValidateSet('pve', 'pvp')][string]$Mode = 'pve',
     [string]$EngineRoot = 'C:\Program Files\Epic Games\UE_5.8',
     [string]$BuildRoot = 'C:\Users\doboh\.codex\builds\AscensionPrototype'
 )
@@ -16,6 +18,6 @@ if (-not (Test-Path -LiteralPath "$BuildRoot\Binaries\Win64\UnrealEditor-Ascensi
 }
 $taskArgs = @(
     "`"$BuildRoot\AscensionPrototype.uproject`"", '-game', '-windowed', '-ResX=1280', '-ResY=720', '-nosplash',
-    "-AscensionServer=$Server", "-AscensionName=`"$Name`"", "-AscensionTeam=$Team"
+    "-AscensionServer=$Server", "-AscensionName=`"$Name`"", "-AscensionTeam=$Team", "-AscensionMode=$Mode"
 )
 Start-Process -FilePath $taskEngine -ArgumentList $taskArgs -WindowStyle Normal

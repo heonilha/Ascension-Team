@@ -9,6 +9,7 @@
 #include "HAL/RunnableThread.h"
 #include "Kismet/GameplayStatics.h"
 #include "Containers/Queue.h"
+#include "DrawDebugHelpers.h"
 #include "Sockets.h"
 #include "SocketSubsystem.h"
 
@@ -83,7 +84,7 @@ public:
                 FMemory::Memcpy(&Header, Pending.GetData() + Offset, sizeof(Header));
                 if (Header.size < sizeof(Proto::PacketHeader) || Header.size > Proto::kMaxPacketSize) return Finish(TEXT("잘못된 패킷 크기"));
                 if (Pending.Num() - Offset < Header.size) break; // 나머지는 다음 수신에서
-                Inbox.Enqueue(TArray<uint8>(Pending.GetData() + Offset, Header.size));
+                Inbox.Enqueue({TArray<uint8>(Pending.GetData() + Offset, Header.size), FPlatformTime::Seconds()});
                 Offset += Header.size;
             }
             if (Offset > 0) Pending.RemoveAt(0, Offset, EAllowShrinking::No);
@@ -117,7 +118,12 @@ public:
         Socket = nullptr;
     }
 
-    TQueue<TArray<uint8>, EQueueMode::Spsc> Inbox;
+    struct FReceived
+    {
+        TArray<uint8> Bytes;
+        double ReceivedAt = 0; // 수신 스레드가 패킷을 잘라낸 순간(FPlatformTime::Seconds)
+    };
+    TQueue<FReceived, EQueueMode::Spsc> Inbox;
     std::atomic<bool> bConnected{false};
     std::atomic<bool> bClosed{false};
     FString Error; // bClosed가 true가 된 뒤에만 게임 스레드에서 읽는다
@@ -142,7 +148,7 @@ ACLNetSession::ACLNetSession()
     PrimaryActorTick.bTickEvenWhenPaused = true; // 일시정지 중에도 수신 큐를 비운다
 }
 
-void ACLNetSession::Connect(const FString& HostPort, const FString& InPlayerName, uint32 InTeamCode)
+void ACLNetSession::Connect(const FString& HostPort, const FString& InPlayerName, uint32 InTeamCode, bool bInPvp)
 {
     FString Host = HostPort, PortText;
     int32 Port = Proto::kDefaultPort;
@@ -151,11 +157,13 @@ void ACLNetSession::Connect(const FString& HostPort, const FString& InPlayerName
     ServerText = FString::Printf(TEXT("%s:%d"), *Host, Port);
     PlayerName = InPlayerName;
     TeamCode = InTeamCode;
+    bPvp = bInPvp;
+    Capacity = bPvp ? Proto::kMaxPvpPlayers : Proto::kMaxRoomPlayers;
     State = EState::Connecting;
 
     Receiver = new FCLNetReceiver(Host, Port);
     Thread = FRunnableThread::Create(Receiver, TEXT("AscensionNetReceiver"));
-    UE_LOG(LogTemp, Display, TEXT("ASCENSION_NET_CONNECT %s name=%s team=%u"), *ServerText, *PlayerName, TeamCode);
+    UE_LOG(LogTemp, Display, TEXT("ASCENSION_NET_CONNECT %s name=%s team=%u mode=%s"), *ServerText, *PlayerName, TeamCode, bPvp ? TEXT("pvp") : TEXT("pve"));
 }
 
 void ACLNetSession::Tick(float Delta)
@@ -172,8 +180,8 @@ void ACLNetSession::Tick(float Delta)
         State = EState::LoggingIn;
     }
 
-    TArray<uint8> Bytes;
-    while (Receiver->Inbox.Dequeue(Bytes)) HandlePacket(Bytes);
+    FCLNetReceiver::FReceived Received;
+    while (Receiver->Inbox.Dequeue(Received)) HandlePacket(Received.Bytes, Received.ReceivedAt);
 
     if (Receiver->bClosed && State != EState::Failed) Fail(Receiver->Error.IsEmpty() ? FString(TEXT("연결 종료")) : Receiver->Error);
     if (State != EState::InRoom) return;
@@ -186,9 +194,10 @@ void ACLNetSession::Tick(float Delta)
     }
     if (Now >= NextPing)
     {
-        NextPing = Now + 1.0;
+        NextPing = Now + PingInterval;
         auto Ping = Proto::Make<Proto::C_Ping>();
         Ping.clientTimeMs = NowMs();
+        Ping.lastRttMs = RttMs; // 서버가 판정 유예(되감기 허용량)를 정하는 데 쓴다
         SendPacket(Ping);
     }
 
@@ -199,7 +208,7 @@ void ACLNetSession::Tick(float Delta)
     }
 }
 
-void ACLNetSession::HandlePacket(const TArray<uint8>& Bytes)
+void ACLNetSession::HandlePacket(const TArray<uint8>& Bytes, double ReceivedAt)
 {
     Proto::PacketHeader Header;
     if (!ReadFixed(Bytes, Header, false)) return;
@@ -220,6 +229,7 @@ void ACLNetSession::HandlePacket(const TArray<uint8>& Bytes)
         MyId = Packet.playerId;
         auto Enter = Proto::Make<Proto::C_EnterRoom>();
         Enter.teamCode = TeamCode;
+        Enter.mode = bPvp ? Proto::RoomMode::PvP : Proto::RoomMode::PvE;
         SendPacket(Enter);
         State = EState::Entering;
         break;
@@ -230,15 +240,22 @@ void ACLNetSession::HandlePacket(const TArray<uint8>& Bytes)
         if (!ReadFixed(Bytes, Packet, false) || Bytes.Num() != int32(sizeof(Packet) + Packet.count * sizeof(Proto::PlayerInfo))) break;
         if (Packet.result != Proto::EnterResult::Ok)
         {
-            Fail(Packet.result == Proto::EnterResult::RoomFull ? FString(TEXT("팀 방이 가득 찼습니다 (최대 3명). 다른 팀 코드를 쓰세요."))
-                                                         : FString(TEXT("방 입장 실패")));
+            Fail(Packet.result == Proto::EnterResult::RoomFull
+                     ? FString::Printf(TEXT("방이 가득 찼습니다 (최대 %d명). 다른 팀 코드를 쓰세요."), Capacity)
+                     : FString(TEXT("방 입장 실패")));
             break;
         }
         State = EState::InRoom;
+        Capacity = Packet.capacity;
+        IframeMs = Packet.rules.iframeMs;
+        RewindCapMs = Packet.rules.rewindCapMs;
+        // 첫 시계 추정(왕복 시간을 모르므로 거칠다). 1초 안에 S_Pong으로 바뀐다.
+        ServerTimeOffset = ReceivedAt - Packet.serverTimeMs / 1000.0;
         if (ACLHero* Hero = LocalHero())
         {
             Hero->SetActorLocation(ToFVector(Packet.spawnPosition), false, nullptr, ETeleportType::TeleportPhysics);
             Hero->GetCharacterMovement()->StopMovementImmediately();
+            Hero->ImmuneDuration = IframeMs / 1000.0;
         }
         for (int32 I = 0; I < Packet.count; ++I)
         {
@@ -246,7 +263,8 @@ void ACLNetSession::HandlePacket(const TArray<uint8>& Bytes)
             SpawnRemote(Info.playerId, Info.name, ToFVector(Info.position), Info.yaw);
         }
         NextMoveSend = FPlatformTime::Seconds();
-        UE_LOG(LogTemp, Display, TEXT("ASCENSION_NET_ENTER team=%u id=%u others=%d"), TeamCode, MyId, Packet.count);
+        UE_LOG(LogTemp, Display, TEXT("ASCENSION_NET_ENTER team=%u id=%u others=%d mode=%s iframe=%ums rewind_cap=%ums"), TeamCode, MyId, Packet.count,
+               bPvp ? TEXT("pvp") : TEXT("pve"), IframeMs, RewindCapMs);
         break;
     }
     case Proto::PacketId::S_PlayerJoined:
@@ -266,7 +284,7 @@ void ACLNetSession::HandlePacket(const TArray<uint8>& Bytes)
         Proto::S_MoveBatch Packet;
         if (!ReadFixed(Bytes, Packet, false) || Bytes.Num() != int32(sizeof(Packet) + Packet.count * sizeof(Proto::MoveEntry))) break;
         const double ServerTime = Packet.serverTick * (Proto::kServerTickMs / 1000.0);
-        const double Offset = FPlatformTime::Seconds() - ServerTime;
+        const double Offset = ReceivedAt - ServerTime;
         // 늦게 도착한 패킷일수록 Offset이 크다. 가장 작은 값을 따라가되 시계 차이를 조금씩 허용한다.
         ServerClockOffset = bHasClock ? FMath::Min(Offset, ServerClockOffset + .001) : Offset;
         bHasClock = true;
@@ -295,7 +313,60 @@ void ACLNetSession::HandlePacket(const TArray<uint8>& Bytes)
     case Proto::PacketId::S_Pong:
     {
         Proto::S_Pong Packet;
-        if (ReadFixed(Bytes, Packet)) RttMs = NowMs() - Packet.clientTimeMs;
+        if (!ReadFixed(Bytes, Packet)) break;
+        RttMs = uint32(ReceivedAt * 1000.0) - Packet.clientTimeMs;
+        // 왕복 시간이 짧은 측정일수록 정확하다: 서버 시각 + 왕복/2 = 도착 시각. 최근 몇 개 중 가장 짧은 것을 쓴다.
+        ClockSamples.Add({RttMs, ReceivedAt - (Packet.serverTimeMs + RttMs / 2.0) / 1000.0});
+        if (ClockSamples.Num() > ClockWindow) ClockSamples.RemoveAt(0);
+        uint32 BestRtt = MAX_uint32;
+        for (const FClockSample& Sample : ClockSamples)
+        {
+            if (Sample.RttMs > BestRtt) continue; // 같은 왕복 시간이면 최신 값을 쓴다
+            BestRtt = Sample.RttMs;
+            ServerTimeOffset = Sample.Offset;
+        }
+        break;
+    }
+    case Proto::PacketId::S_AttackStart:
+    {
+        Proto::S_AttackStart Packet;
+        if (!ReadFixed(Bytes, Packet)) break;
+        // 서버가 정한 명중 시각까지 남은 시간만큼 예고를 보여 준다(패킷이 늦게 왔으면 그만큼 짧다).
+        const int32 HitInMs = int32(Packet.hitServerMs) - int32(ServerNowMs());
+        const FVector Center = ToFVector(Packet.center) - FVector(0, 0, 85);
+        DrawDebugCircle(GetWorld(), Center, Packet.radius, 48, Packet.kind == Proto::AttackKind::Slam ? FColor::Orange : FColor::Red, false,
+                        FMath::Max(.05f, HitInMs / 1000.f), 0, 4.f, FVector(1, 0, 0), FVector(0, 1, 0), false);
+        const bool bTargetsMe = Packet.attackerId != MyId && LocalHero() &&
+                                FVector::Dist2D(LocalHero()->GetActorLocation(), ToFVector(Packet.center)) <= Packet.radius;
+        if (bTargetsMe) LocalHero()->Notice = FString::Printf(TEXT("공격 예고! %.2f초 뒤 명중 · 회피 무적 %.2f초"), HitInMs / 1000.f, IframeMs / 1000.f);
+        UE_LOG(LogTemp, Display, TEXT("ASCENSION_NET_ATTACK id=%u attacker=%u kind=%d hit_in=%dms"), Packet.attackId, Packet.attackerId,
+               int32(Packet.kind), HitInMs);
+
+        // 시험 옵션 -AscensionNetAutoDodge: 나를 노린 공격을 하나 걸러 하나씩 무적 구간 가운데에 맞춰 실제 회피 입력을 낸다.
+        if (bTargetsMe && FParse::Param(FCommandLine::Get(), TEXT("AscensionNetAutoDodge")) && (AutoDodgeTurn++ % 2 == 0))
+        {
+            const float Delay = FMath::Max(0.f, (HitInMs - IframeMs / 2) / 1000.f);
+            FTimerHandle Handle;
+            GetWorldTimerManager().SetTimer(Handle, FTimerDelegate::CreateWeakLambda(this, [this] {
+                if (ACLHero* Hero = LocalHero()) Hero->Dodge();
+            }), FMath::Max(Delay, .001f), false);
+        }
+        break;
+    }
+    case Proto::PacketId::S_HitResult:
+    {
+        Proto::S_HitResult Packet;
+        if (!ReadFixed(Bytes, Packet)) break;
+        const bool bDodged = Packet.result == Proto::HitResult::Dodged;
+        if (Packet.targetId == MyId)
+        {
+            (bDodged ? ServerDodges : ServerHits)++;
+            if (ACLHero* Hero = LocalHero()) Hero->ApplyServerHit(bDodged, Packet.damage, Packet.rewindMs);
+        }
+        UE_LOG(LogTemp, Display, TEXT("ASCENSION_NET_HIT id=%u target=%u%s result=%s damage=%.0f server_hp=%.0f local_hp=%.0f dodge_before_hit=%dms rewind=%ums"),
+               Packet.attackId, Packet.targetId, Packet.targetId == MyId ? TEXT("(me)") : TEXT(""), bDodged ? TEXT("dodged") : TEXT("hit"),
+               Packet.damage, Packet.hpAfter, LocalHero() ? LocalHero()->HP : -1.f,
+               bDodged ? int32(Packet.hitServerMs) - int32(Packet.dodgeServerMs) : -1, uint32(Packet.rewindMs));
         break;
     }
     default:
@@ -320,6 +391,32 @@ void ACLNetSession::SendMove()
     Move.yaw = float(Hero->GetActorRotation().Yaw);
     Move.state = Hero->HP <= 0 ? Proto::MoveState::Dead : Proto::MoveState(FMath::Clamp(Hero->GetVisualState(), 0, 4));
     SendPacket(Move);
+}
+
+uint32 ACLNetSession::ServerNowMs() const
+{
+    return uint32(FMath::Max(0.0, FPlatformTime::Seconds() - ServerTimeOffset) * 1000.0);
+}
+
+void ACLNetSession::SendDodge(float Yaw)
+{
+    if (State != EState::InRoom) return;
+    auto Dodge = Proto::Make<Proto::C_Dodge>();
+    Dodge.sequence = ++DodgeSequence;
+    Dodge.pressServerMs = ServerNowMs();
+    Dodge.yaw = Yaw;
+    SendPacket(Dodge);
+}
+
+void ACLNetSession::SendAttack(float Yaw)
+{
+    if (State != EState::InRoom || !bPvp) return; // PvE 몬스터는 아직 서버에 없다
+    auto Attack = Proto::Make<Proto::C_Attack>();
+    Attack.sequence = ++AttackSequence;
+    Attack.pressServerMs = ServerNowMs();
+    Attack.yaw = Yaw;
+    Attack.kind = Proto::AttackKind::Slash;
+    SendPacket(Attack);
 }
 
 void ACLNetSession::SpawnRemote(uint32 Id, const char* Name, const FVector& Position, float Yaw)
@@ -366,7 +463,9 @@ FString ACLNetSession::StatusText() const
     case EState::LoggingIn: return TEXT("온라인 · 로그인 중...");
     case EState::Entering: return FString::Printf(TEXT("온라인 · 팀 %u 방 입장 중..."), TeamCode);
     case EState::InRoom:
-        return FString::Printf(TEXT("온라인 · 팀 %u · 같은 층 %d/%d명 · 지연 %ums%s"), TeamCode, Remotes.Num() + 1, Proto::kMaxRoomPlayers, RttMs,
+        return FString::Printf(TEXT("온라인 %s · 팀 %u · 같은 방 %d/%d명 · 지연 %ums · 무적 %.2f초%s%s"), bPvp ? TEXT("PvP") : TEXT("PvE"), TeamCode,
+                               Remotes.Num() + 1, Capacity, RttMs, IframeMs / 1000.f,
+                               ServerDodges + ServerHits > 0 ? *FString::Printf(TEXT(" · 서버 판정 회피 %u/피격 %u"), ServerDodges, ServerHits) : TEXT(""),
                                Corrections > 0 ? *FString::Printf(TEXT(" · 위치 보정 %u회"), Corrections) : TEXT(""));
     case EState::Failed: return FString::Printf(TEXT("온라인 오류 · %s"), *Error);
     default: return FString();
