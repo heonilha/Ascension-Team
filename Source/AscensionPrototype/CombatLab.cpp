@@ -1,6 +1,7 @@
 #include "CombatLab.h"
 #include "HeroMotion.h"
 #include "CLNetSession.h"
+#include "CLCollisionVerify.h"
 #include "Camera/CameraComponent.h"
 #include "GameFramework/SpringArmComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
@@ -903,6 +904,12 @@ void AAscensionMode::BeginPlay()
         if(Net) Net->Connect(ServerAddress,Name,Team,bPvp);
         if(ACLHero* P=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0)))
             P->Notice=bPvp?TEXT("온라인 PvP 시험: 공격·회피를 서버가 판정합니다."):TEXT("온라인: 같은 팀 코드로 접속한 플레이어와 함께 이동합니다. 몬스터는 서버 이전 후 추가됩니다.");
+    }
+    if(FParse::Param(FCommandLine::Get(),TEXT("AscensionCollisionVerify")))
+    {
+        // 서버 충돌 지형 파일과 실제 충돌 비교. 물리 장면이 준비된 뒤 한 번 실행하고 종료한다.
+        FTimerHandle Handle;
+        GetWorldTimerManager().SetTimer(Handle,FTimerDelegate::CreateWeakLambda(this,[this]{ FPlatformMisc::RequestExitWithStatus(false,AscensionVerifyServerCollision(GetWorld())?0:1); }),.5f,false);
     }
 }
 void AAscensionMode::Check(bool Condition,const TCHAR* Name)
