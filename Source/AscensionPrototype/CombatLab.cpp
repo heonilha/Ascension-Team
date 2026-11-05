@@ -181,8 +181,8 @@ void ACLHero::SetupPlayerInputComponent(UInputComponent* Input)
     Input->BindAction("Choice3",IE_Pressed,this,&ACLHero::Choice3).bExecuteWhenPaused=true; Input->BindAction("Skip",IE_Pressed,this,&ACLHero::Skip).bExecuteWhenPaused=true;
 }
 bool ACLHero::UsesBladeWave() const { const AAscensionMode* Mode=Cast<AAscensionMode>(GetWorld()->GetAuthGameMode()); return Mode && Mode->bSurvival; }
-void ACLHero::Forward(float V) { MoveForward=V; if(HP>0 && Lab::Now(this)>=DodgeEnd && (UsesBladeWave() || Lab::Now(this)>=AttackEnd)) AddMovementInput(FRotator(0,GetControlRotation().Yaw,0).Vector(),V); }
-void ACLHero::Right(float V) { MoveRight=V; if(HP>0 && Lab::Now(this)>=DodgeEnd && (UsesBladeWave() || Lab::Now(this)>=AttackEnd)) AddMovementInput(FRotationMatrix(FRotator(0,GetControlRotation().Yaw,0)).GetUnitAxis(EAxis::Y),V); }
+void ACLHero::Forward(float V) { MoveForward=V; if(!bNetMovement && HP>0 && Lab::Now(this)>=DodgeEnd && (UsesBladeWave() || Lab::Now(this)>=AttackEnd)) AddMovementInput(FRotator(0,GetControlRotation().Yaw,0).Vector(),V); }
+void ACLHero::Right(float V) { MoveRight=V; if(!bNetMovement && HP>0 && Lab::Now(this)>=DodgeEnd && (UsesBladeWave() || Lab::Now(this)>=AttackEnd)) AddMovementInput(FRotationMatrix(FRotator(0,GetControlRotation().Yaw,0)).GetUnitAxis(EAxis::Y),V); }
 void ACLHero::LookX(float V) { if(!IsValid(Locked)) AddControllerYawInput(V); }
 void ACLHero::LookY(float V) { AddControllerPitchInput(V); }
 void ACLHero::Tick(float Delta)
@@ -195,7 +195,7 @@ void ACLHero::Tick(float Delta)
     Camera->SetRelativeLocation(FVector(0,FMath::Sin(T*135)*Impact,FMath::Sin(T*175)*Impact*.55f));
     // Show the sword motion while the capsule keeps moving. Charging holds
     // the wind-up pose; release plays the remainder of the heavy slash.
-    const int32 State=T<DodgeEnd?4:bCharging?3:T<AttackEnd?(bHeavy?3:2):GetVelocity().SizeSquared2D()>100?1:0;
+    const int32 State=T<DodgeEnd?4:bCharging?3:T<AttackEnd?(bHeavy?3:2):MoveVelocity().SizeSquared2D()>100?1:0;
     if(UsesBladeWave() && bHasModel)
     {
         if(State==4 && VisualState!=4) GetMesh()->SetRelativeRotation(FRotator(0,270,0));
@@ -204,7 +204,7 @@ void ACLHero::Tick(float Delta)
         if(Motion && Clips.Num()==5)
         {
             Motion->IdleClip=Clips[0]; Motion->RunClip=Clips[1];
-            Motion->BaseTime+=Delta; Motion->MovingWeight=FMath::Clamp(GetVelocity().Size2D()/220.f,0.f,1.f);
+            Motion->BaseTime+=Delta; Motion->MovingWeight=FMath::Clamp(MoveVelocity().Size2D()/220.f,0.f,1.f);
             Motion->ActionWeight=State>=2?1.f:0.f;
             if(State>=2 && Clips[State])
             {
@@ -259,7 +259,7 @@ void ACLHero::Tick(float Delta)
         SetActorRotation(FMath::RInterpTo(GetActorRotation(),Facing,Delta,18.f));
     }
     if(T<AttackEnd && !UsesBladeWave()) { ConsumeMovementInputVector(); GetCharacterMovement()->StopMovementImmediately(); }
-    if(T<DodgeEnd)
+    if(T<DodgeEnd && !bNetMovement) // 온라인 회피 이동은 공유 이동 코드가 같은 곡선으로 계산한다
     {
         // Integrate a smooth 300cm roll over 0.65s, independent of frame rate.
         const float Progress=FMath::Clamp(float((T-DodgeStart)/(DodgeEnd-DodgeStart)),0.f,1.f);
@@ -395,7 +395,7 @@ void ACLHero::Dodge()
     ConsumeMovementInputVector(); GetCharacterMovement()->StopMovementImmediately();
     DodgeStart=T; DodgeProgress=0; DodgeEnd=T+.65; ImmuneEnd=T+ImmuneDuration; DodgeReady=T+1.0;
     SetActorRotation(DashDirection.Rotation()); VisualState=-1;
-    if(ACLNetSession* Net=Lab::OnlineSession(this)) Net->SendDodge(float(DashDirection.Rotation().Yaw)); // 서버가 누른 시각으로 무적 판정
+    if(ACLNetSession* Net=Lab::OnlineSession(this)) Net->SendDodge(DashDirection); // 서버가 누른 시각으로 무적 판정
     if(HasAwakening(3))
     {
         FVector P=GetActorLocation(); DrawDebugSphere(GetWorld(),P,260,24,FColor::Orange,false,1,0,3);
@@ -414,6 +414,14 @@ void ACLHero::Skill()
     SkillReady=T+(HasAwakening(5)?4:6); float Range=HasAwakening(2)?440:320;
     DrawDebugSphere(GetWorld(),GetActorLocation(),Range,32,FColor::Cyan,false,.35,0,3);
     for(TActorIterator<ACLEnemy> It(GetWorld());It;++It) if(It->HP>0 && FVector::DistSquared(GetActorLocation(),It->GetActorLocation())<=FMath::Square(Range) && Lab::Clear(this,*It)) It->ReceiveHit(25);
+}
+FVector ACLHero::NetMoveInput() const
+{
+    // Forward()/Right()의 AddMovementInput과 같은 조건·방향
+    const double T=Lab::Now(this);
+    if(HP<=0 || T<DodgeEnd || (!UsesBladeWave() && T<AttackEnd)) return FVector::ZeroVector;
+    const FRotationMatrix Axes(FRotator(0,GetControlRotation().Yaw,0));
+    return (Axes.GetUnitAxis(EAxis::X)*MoveForward+Axes.GetUnitAxis(EAxis::Y)*MoveRight).GetClampedToMaxSize2D(1.0);
 }
 void ACLHero::ApplyServerHit(bool bDodged,float Damage,int32 RewindMs)
 {

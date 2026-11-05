@@ -1,15 +1,21 @@
 #include "CLNetSession.h"
 
 #include "AscensionProtocol.h"
+#include "AscensionMovement.h"
 #include "CLRemoteHero.h"
 #include "CombatLab.h"
 
+#include "Components/CapsuleComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "HAL/Runnable.h"
 #include "HAL/RunnableThread.h"
 #include "Kismet/GameplayStatics.h"
 #include "Containers/Queue.h"
 #include "DrawDebugHelpers.h"
+#include "Misc/CommandLine.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Parse.h"
+#include "Misc/Paths.h"
 #include "Sockets.h"
 #include "SocketSubsystem.h"
 
@@ -17,6 +23,7 @@
 
 // 유니티 빌드에서 다른 .cpp로 이름이 새지 않도록 using namespace 대신 별칭을 쓴다.
 namespace Proto = asc::proto;
+namespace AscMove = asc::move; // "Move"는 언리얼 전역 함수 이름과 겹친다
 
 namespace
 {
@@ -142,6 +149,29 @@ private:
     std::atomic<bool> bStop{false};
 };
 
+// 내 이동 예측 상태. 게임 스레드에서만 쓴다.
+struct FCLPrediction
+{
+    AscMove::World World;
+    AscMove::State Sim, Previous; // 마지막 틱 결과와 그 직전(화면 보간용)
+    struct FPending
+    {
+        uint32 Sequence;
+        AscMove::Input Input;
+        AscMove::State After;
+    };
+    TArray<FPending> Pending;               // 서버 확정을 아직 못 받은 입력
+    TArray<Proto::InputCommand> Outgoing;   // 아직 보내지 않은 입력
+    uint32 Sequence = 0;
+    double Accumulator = 0;
+    FVector2D VisualOffset = FVector2D::ZeroVector; // 재조정 차이를 화면에서 녹이는 값
+    double GroundZ = AscMove::kGroundZ;
+    bool bDodgeQueued = false;
+    FVector2D DodgeDirection = FVector2D::ZeroVector;
+    uint32 Acks = 0, Corrections = 0;
+    float MaxError = 0;
+};
+
 ACLNetSession::ACLNetSession()
 {
     PrimaryActorTick.bCanEverTick = true;
@@ -159,6 +189,17 @@ void ACLNetSession::Connect(const FString& HostPort, const FString& InPlayerName
     TeamCode = InTeamCode;
     bPvp = bInPvp;
     Capacity = bPvp ? Proto::kMaxPvpPlayers : Proto::kMaxRoomPlayers;
+
+    // 이동 예측에 서버와 같은 충돌 지형 파일을 쓴다.
+    FString MapText;
+    const FString MapPath = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir() / TEXT("Data/ServerCollision/CombatLab.txt"));
+    Prediction = new FCLPrediction();
+    std::string ParseError;
+    if (!FFileHelper::LoadFileToString(MapText, *MapPath) || !AscMove::ParseWorld(std::string(TCHAR_TO_UTF8(*MapText)), Prediction->World, ParseError))
+    {
+        Fail(FString::Printf(TEXT("충돌 지형을 읽지 못함: %s %s"), *MapPath, UTF8_TO_TCHAR(ParseError.c_str())));
+        return;
+    }
     State = EState::Connecting;
 
     Receiver = new FCLNetReceiver(Host, Port);
@@ -187,10 +228,17 @@ void ACLNetSession::Tick(float Delta)
     if (State != EState::InRoom) return;
 
     const double Now = FPlatformTime::Seconds();
-    if (Now >= NextMoveSend)
+    TickPrediction(Delta);
+    if (Now >= NextInputSend)
     {
-        NextMoveSend = Now + MoveSendInterval;
-        SendMove();
+        NextInputSend = Now + InputSendInterval;
+        SendInputs();
+    }
+    if (Now >= NextPredictionLog && Prediction)
+    {
+        NextPredictionLog = Now + 5.0;
+        UE_LOG(LogTemp, Display, TEXT("ASCENSION_NET_PREDICTION acks=%u corrections=%u max_error=%.2fcm pending=%d"), Prediction->Acks,
+               Prediction->Corrections, Prediction->MaxError, Prediction->Pending.Num());
     }
     if (Now >= NextPing)
     {
@@ -251,18 +299,14 @@ void ACLNetSession::HandlePacket(const TArray<uint8>& Bytes, double ReceivedAt)
         RewindCapMs = Packet.rules.rewindCapMs;
         // 첫 시계 추정(왕복 시간을 모르므로 거칠다). 1초 안에 S_Pong으로 바뀐다.
         ServerTimeOffset = ReceivedAt - Packet.serverTimeMs / 1000.0;
-        if (ACLHero* Hero = LocalHero())
-        {
-            Hero->SetActorLocation(ToFVector(Packet.spawnPosition), false, nullptr, ETeleportType::TeleportPhysics);
-            Hero->GetCharacterMovement()->StopMovementImmediately();
-            Hero->ImmuneDuration = IframeMs / 1000.0;
-        }
+        if (ACLHero* Hero = LocalHero()) Hero->ImmuneDuration = IframeMs / 1000.0;
+        StartPrediction(ToFVector(Packet.spawnPosition));
         for (int32 I = 0; I < Packet.count; ++I)
         {
             const Proto::PlayerInfo Info = ReadEntry<Proto::PlayerInfo>(Bytes, sizeof(Packet) + I * sizeof(Proto::PlayerInfo));
             SpawnRemote(Info.playerId, Info.name, ToFVector(Info.position), Info.yaw);
         }
-        NextMoveSend = FPlatformTime::Seconds();
+        NextInputSend = FPlatformTime::Seconds();
         UE_LOG(LogTemp, Display, TEXT("ASCENSION_NET_ENTER team=%u id=%u others=%d mode=%s iframe=%ums rewind_cap=%ums"), TeamCode, MyId, Packet.count,
                bPvp ? TEXT("pvp") : TEXT("pve"), IframeMs, RewindCapMs);
         break;
@@ -297,17 +341,37 @@ void ACLNetSession::HandlePacket(const TArray<uint8>& Bytes, double ReceivedAt)
         }
         break;
     }
-    case Proto::PacketId::S_Correction:
+    case Proto::PacketId::S_MoveAck:
     {
-        Proto::S_Correction Packet;
-        if (!ReadFixed(Bytes, Packet)) break;
-        ++Corrections;
-        if (ACLHero* Hero = LocalHero())
+        Proto::S_MoveAck Packet;
+        if (!ReadFixed(Bytes, Packet) || !Prediction) break;
+        FCLPrediction& P = *Prediction;
+        ++P.Acks;
+        const AscMove::State Confirmed = AscMove::FromProto(Packet.state);
+        int32 Done = 0;
+        while (Done < P.Pending.Num() && P.Pending[Done].Sequence < Packet.sequence) ++Done;
+        if (Done < P.Pending.Num() && P.Pending[Done].Sequence == Packet.sequence)
         {
-            Hero->SetActorLocation(ToFVector(Packet.position), false, nullptr, ETeleportType::TeleportPhysics);
-            Hero->GetCharacterMovement()->StopMovementImmediately();
+            // 같은 입력까지의 내 예측과 서버 확정 위치의 차이(같은 코드라 보통 0)
+            const float PredictionError = FMath::Sqrt(FMath::Square(P.Pending[Done].After.x - Confirmed.x) + FMath::Square(P.Pending[Done].After.y - Confirmed.y));
+            P.MaxError = FMath::Max(P.MaxError, PredictionError);
+            if (PredictionError > .5f) ++P.Corrections;
+            ++Done;
         }
-        UE_LOG(LogTemp, Warning, TEXT("ASCENSION_NET_CORRECTION seq=%u"), Packet.sequence);
+        P.Pending.RemoveAt(0, Done, EAllowShrinking::No);
+
+        // 확정 상태에서 남은 입력을 다시 돌린다. 화면은 이어지게 두고 차이만 서서히 녹인다.
+        const AscMove::State Before = P.Sim;
+        P.Sim = Confirmed;
+        for (FCLPrediction::FPending& Pending : P.Pending)
+        {
+            AscMove::Step(P.Sim, Pending.Input, P.World);
+            Pending.After = P.Sim;
+        }
+        const FVector2D Shift(P.Sim.x - Before.x, P.Sim.y - Before.y);
+        P.Previous.x += Shift.X;
+        P.Previous.y += Shift.Y;
+        P.VisualOffset -= Shift;
         break;
     }
     case Proto::PacketId::S_Pong:
@@ -380,17 +444,100 @@ void ACLNetSession::SendBytes(const void* Data, int32 Size)
     if (Receiver && !Receiver->Send(Data, Size) && State != EState::Failed) Fail(TEXT("송신 실패"));
 }
 
-void ACLNetSession::SendMove()
+void ACLNetSession::StartPrediction(const FVector& Spawn)
 {
     ACLHero* Hero = LocalHero();
-    if (!Hero) return;
-    auto Move = Proto::Make<Proto::C_Move>();
-    Move.sequence = ++MoveSequence;
-    Move.position = ToVec3(Hero->GetActorLocation());
-    Move.velocity = ToVec3(Hero->GetVelocity());
-    Move.yaw = float(Hero->GetActorRotation().Yaw);
-    Move.state = Hero->HP <= 0 ? Proto::MoveState::Dead : Proto::MoveState(FMath::Clamp(Hero->GetVisualState(), 0, 4));
-    SendPacket(Move);
+    if (!Prediction || !Hero) return;
+    FCLPrediction& P = *Prediction;
+    P.Sim = AscMove::State{};
+    P.Sim.x = float(Spawn.X);
+    P.Sim.y = float(Spawn.Y);
+    P.Previous = P.Sim;
+    P.Pending.Reset();
+    P.Outgoing.Reset();
+    P.Accumulator = 0;
+    P.VisualOffset = FVector2D::ZeroVector;
+
+    // 바닥 높이: 서버 이동은 2D라 높이는 바닥에 선 캡슐 중심으로 고정한다.
+    FHitResult Hit;
+    FCollisionQueryParams Query(TEXT("AscensionGround"), false, Hero);
+    if (GetWorld()->LineTraceSingleByChannel(Hit, FVector(Spawn.X, Spawn.Y, 500), FVector(Spawn.X, Spawn.Y, -500), ECC_WorldStatic, Query))
+        P.GroundZ = Hit.ImpactPoint.Z + Hero->GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+
+    // 온라인에서는 언리얼 이동 대신 공유 이동 코드가 위치를 정한다.
+    Hero->bNetMovement = true;
+    Hero->GetCharacterMovement()->StopMovementImmediately();
+    Hero->GetCharacterMovement()->SetMovementMode(MOVE_None);
+    Hero->SetActorLocation(FVector(Spawn.X, Spawn.Y, P.GroundZ), false, nullptr, ETeleportType::TeleportPhysics);
+}
+
+void ACLNetSession::TickPrediction(float Delta)
+{
+    ACLHero* Hero = LocalHero();
+    if (!Prediction || !Hero || !Hero->bNetMovement) return;
+    FCLPrediction& P = *Prediction;
+
+    // 시험 옵션 -AscensionNetAutoMove: 원을 그리며 달리고 2.5초마다 회피한다(화면 없는 예측 검증용).
+    static const bool bAutoMove = FParse::Param(FCommandLine::Get(), TEXT("AscensionNetAutoMove"));
+
+    P.Accumulator += FMath::Min(Delta, .25f); // 긴 멈춤 뒤 몰아서 돌지 않는다
+    while (P.Accumulator >= AscMove::kTick)
+    {
+        P.Accumulator -= AscMove::kTick;
+        FVector Direction = Hero->NetMoveInput();
+        if (bAutoMove)
+        {
+            const double T = P.Sequence * AscMove::kTick;
+            Direction = FVector(FMath::Cos(T * .8), FMath::Sin(T * .8), 0);
+            if (P.Sequence % 150 == 75) Hero->Dodge(); // SendDodge가 회피 입력을 예약한다
+        }
+        AscMove::Input Input;
+        Input.moveX = float(Direction.X);
+        Input.moveY = float(Direction.Y);
+        if (P.bDodgeQueued)
+        {
+            Input.flags |= AscMove::kInputDodge;
+            Input.dodgeX = float(P.DodgeDirection.X);
+            Input.dodgeY = float(P.DodgeDirection.Y);
+            P.bDodgeQueued = false;
+        }
+        P.Previous = P.Sim;
+        AscMove::Step(P.Sim, Input, P.World);
+        P.Pending.Add({++P.Sequence, Input, P.Sim});
+        P.Outgoing.Add({Input.moveX, Input.moveY, Input.flags, Input.dodgeX, Input.dodgeY});
+    }
+    if (P.Pending.Num() > AscMove::kTickRate * 10) P.Pending.RemoveAt(0, P.Pending.Num() - AscMove::kTickRate * 10); // 확정이 오래 끊긴 경우
+
+    // 화면: 두 틱 사이를 보간하고, 재조정 차이는 약 0.1초 안에 녹인다.
+    P.VisualOffset *= FMath::Exp(-Delta * 25.0);
+    if (P.VisualOffset.SizeSquared() < .01) P.VisualOffset = FVector2D::ZeroVector;
+    const double Alpha = P.Accumulator / AscMove::kTick;
+    const FVector Position(FMath::Lerp(P.Previous.x, P.Sim.x, Alpha) + P.VisualOffset.X, FMath::Lerp(P.Previous.y, P.Sim.y, Alpha) + P.VisualOffset.Y, P.GroundZ);
+    Hero->SetActorLocation(Position);
+    Hero->NetVelocity = FVector(P.Sim.vx, P.Sim.vy, 0);
+}
+
+void ACLNetSession::SendInputs()
+{
+    ACLHero* Hero = LocalHero();
+    if (!Prediction || !Hero || Prediction->Outgoing.IsEmpty()) return;
+    FCLPrediction& P = *Prediction;
+    const uint32 First = P.Sequence - uint32(P.Outgoing.Num()) + 1;
+    for (int32 Offset = 0; Offset < P.Outgoing.Num(); Offset += Proto::kMaxInputsPerPacket)
+    {
+        const int32 Count = FMath::Min<int32>(Proto::kMaxInputsPerPacket, P.Outgoing.Num() - Offset);
+        auto Packet = Proto::Make<Proto::C_Input>();
+        Packet.header.size = uint16(sizeof(Packet) + Count * sizeof(Proto::InputCommand));
+        Packet.firstSequence = First + uint32(Offset);
+        Packet.yaw = float(Hero->GetActorRotation().Yaw);
+        Packet.state = Hero->HP <= 0 ? Proto::MoveState::Dead : Proto::MoveState(FMath::Clamp(Hero->GetVisualState(), 0, 4));
+        Packet.count = uint8(Count);
+        TArray<uint8> Buffer;
+        Buffer.Append(reinterpret_cast<const uint8*>(&Packet), sizeof(Packet));
+        Buffer.Append(reinterpret_cast<const uint8*>(P.Outgoing.GetData() + Offset), Count * sizeof(Proto::InputCommand));
+        SendBytes(Buffer.GetData(), Buffer.Num());
+    }
+    P.Outgoing.Reset();
 }
 
 uint32 ACLNetSession::ServerNowMs() const
@@ -398,9 +545,16 @@ uint32 ACLNetSession::ServerNowMs() const
     return uint32(FMath::Max(0.0, FPlatformTime::Seconds() - ServerTimeOffset) * 1000.0);
 }
 
-void ACLNetSession::SendDodge(float Yaw)
+void ACLNetSession::SendDodge(const FVector& Direction)
 {
     if (State != EState::InRoom) return;
+    if (Prediction)
+    {
+        // 다음 이동 틱에 회피 입력으로 넣는다(서버도 같은 틱에 회피를 시작한다)
+        Prediction->bDodgeQueued = true;
+        Prediction->DodgeDirection = FVector2D(Direction.X, Direction.Y);
+    }
+    const float Yaw = float(Direction.Rotation().Yaw);
     auto Dodge = Proto::Make<Proto::C_Dodge>();
     Dodge.sequence = ++DodgeSequence;
     Dodge.pressServerMs = ServerNowMs();
@@ -452,6 +606,12 @@ void ACLNetSession::Fail(const FString& Reason)
         if (IsValid(Pair.Value)) Pair.Value->Destroy();
     }
     Remotes.Empty();
+    if (ACLHero* Hero = LocalHero(); Hero && Hero->bNetMovement)
+    {
+        // 서버 연결이 끊기면 언리얼 이동으로 돌아간다
+        Hero->bNetMovement = false;
+        Hero->GetCharacterMovement()->SetMovementMode(MOVE_Walking);
+    }
     UE_LOG(LogTemp, Warning, TEXT("ASCENSION_NET_FAILED %s"), *Reason);
 }
 
@@ -466,7 +626,9 @@ FString ACLNetSession::StatusText() const
         return FString::Printf(TEXT("온라인 %s · 팀 %u · 같은 방 %d/%d명 · 지연 %ums · 무적 %.2f초%s%s"), bPvp ? TEXT("PvP") : TEXT("PvE"), TeamCode,
                                Remotes.Num() + 1, Capacity, RttMs, IframeMs / 1000.f,
                                ServerDodges + ServerHits > 0 ? *FString::Printf(TEXT(" · 서버 판정 회피 %u/피격 %u"), ServerDodges, ServerHits) : TEXT(""),
-                               Corrections > 0 ? *FString::Printf(TEXT(" · 위치 보정 %u회"), Corrections) : TEXT(""));
+                               Prediction && Prediction->Corrections > 0
+                                   ? *FString::Printf(TEXT(" · 예측 보정 %u회(최대 %.0fcm)"), Prediction->Corrections, Prediction->MaxError)
+                                   : TEXT(""));
     case EState::Failed: return FString::Printf(TEXT("온라인 오류 · %s"), *Error);
     default: return FString();
     }
@@ -490,6 +652,8 @@ void ACLNetSession::Shutdown()
     Receiver->DestroySocket();
     delete Receiver;
     Receiver = nullptr;
+    delete Prediction;
+    Prediction = nullptr;
 }
 
 void ACLNetSession::EndPlay(const EEndPlayReason::Type Reason)

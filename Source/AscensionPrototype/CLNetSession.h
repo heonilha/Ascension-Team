@@ -3,7 +3,10 @@
 // 스레드 구조
 // - 수신 스레드(FCLNetReceiver): 접속 → 바이트 수신 → 패킷 단위로 잘라 도착 시각과 함께 Inbox 큐에 넣는다.
 //   시계 맞추기는 처리 시각이 아니라 도착 시각으로 한다(게임 프레임이 길어도 서버 시각 추정이 밀리지 않게).
-// - 게임 스레드(Tick): Inbox의 패킷을 처리하고, 15Hz로 내 이동을 보낸다.
+// - 게임 스레드(Tick): Inbox의 패킷을 처리하고, 60Hz 고정 틱으로 내 이동을 예측하며 입력을 30Hz로 묶어 보낸다.
+//
+// 이동(v3, 서버 권한): 서버와 같은 이동 코드(AscensionMovement.h)로 미리 움직이고, 서버 확정 상태(S_MoveAck)를 받으면
+// 그 상태에서 아직 확정되지 않은 입력을 다시 돌려 맞춘다. 차이는 화면에서 순간이동하지 않도록 짧게 녹인다.
 //   액터·월드는 게임 스레드에서만 건드린다.
 //
 // 판정 원칙: 이 클래스는 입력(이동 상태·회피·공격)을 보내고 서버 결과를 화면에 반영만 한다.
@@ -18,6 +21,7 @@ class ACLHero;
 class ACLRemoteHero;
 class FCLNetReceiver;
 class FRunnableThread;
+struct FCLPrediction;
 
 UCLASS()
 class ACLNetSession : public AActor
@@ -34,12 +38,12 @@ public:
     FString StatusText() const;
 
     // 로컬에서 회피·공격을 시작한 순간 부른다. 판정은 서버 결과(S_HitResult)로 받는다.
-    void SendDodge(float Yaw);
+    void SendDodge(const FVector& Direction);
     void SendAttack(float Yaw);
 
     // 원격 플레이어를 서버 시간보다 이만큼 늦게 그려서 두 스냅샷 사이를 보간한다(서버 2틱).
     static constexpr double InterpolationDelay = .1;
-    static constexpr double MoveSendInterval = 1. / 15.;
+    static constexpr double InputSendInterval = 1. / 30.;
 
 private:
     enum class EState : uint8 { Idle, Connecting, LoggingIn, Entering, InRoom, Failed };
@@ -47,7 +51,9 @@ private:
     void HandlePacket(const TArray<uint8>& Bytes, double ReceivedAt);
     void SendBytes(const void* Data, int32 Size);
     template <class T> void SendPacket(const T& Packet) { SendBytes(&Packet, sizeof(T)); }
-    void SendMove();
+    void TickPrediction(float Delta);
+    void SendInputs();
+    void StartPrediction(const FVector& Spawn);
     uint32 ServerNowMs() const;
     void SpawnRemote(uint32 Id, const char* Name, const FVector& Position, float Yaw);
     void RemoveRemote(uint32 Id);
@@ -60,7 +66,9 @@ private:
 
     EState State = EState::Idle;
     FString ServerText, PlayerName, Error;
-    uint32 TeamCode = 0, MyId = 0, MoveSequence = 0, RttMs = 0, Corrections = 0;
+    uint32 TeamCode = 0, MyId = 0, RttMs = 0;
+    FCLPrediction* Prediction = nullptr; // Shutdown()에서 지운다
+    double NextPredictionLog = 0;
     bool bPvp = false;
     uint8 Capacity = 3;
     uint16 IframeMs = 150, RewindCapMs = 200; // 서버가 S_EnterRoom으로 알려 준 모드 규칙
@@ -75,7 +83,7 @@ private:
     static constexpr int32 ClockWindow = 5;
     uint32 AutoDodgeTurn = 0; // -AscensionNetAutoDodge 시험 옵션
 
-    double NextMoveSend = 0, NextPing = 0;
+    double NextInputSend = 0, NextPing = 0;
     // 로컬 시계 - 서버 시계. 가장 작은(지연이 가장 적은) 값을 쓴다.
     double ServerClockOffset = 0;
     bool bHasClock = false;

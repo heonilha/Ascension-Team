@@ -71,6 +71,12 @@ public:
     void ApplyServerHit(bool bDodged, float Damage, int32 RewindMs);
     // 회피 무적 시간. 온라인에서는 서버가 알려 준 방 모드 규칙(PvE 0.15초, PvP 0.30초)으로 바뀐다.
     double ImmuneDuration = .15;
+    // 온라인 이동(서버 권한): 위치는 ACLNetSession의 공유 이동 코드가 정하고, 언리얼 이동은 쓰지 않는다.
+    bool bNetMovement = false;
+    FVector NetVelocity = FVector::ZeroVector;
+    // 이번 틱의 이동 입력(카메라 기준 → 월드 방향, 길이 1 이하). 공격·회피로 이동이 막히면 0.
+    FVector NetMoveInput() const;
+    FVector MoveVelocity() const { return bNetMovement ? NetVelocity : GetVelocity(); }
     void OfferAwakening();
     void ResetLife();
     void Attack(); void Heavy(); void ReleaseHeavy(); void Dodge(); void Skill(); void ToggleLock();
