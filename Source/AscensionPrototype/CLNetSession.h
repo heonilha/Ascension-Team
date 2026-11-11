@@ -51,7 +51,7 @@ private:
     void HandlePacket(const TArray<uint8>& Bytes, double ReceivedAt);
     void SendBytes(const void* Data, int32 Size);
     template <class T> void SendPacket(const T& Packet) { SendBytes(&Packet, sizeof(T)); }
-    void TickPrediction(float Delta);
+    void TickPrediction();
     void SendInputs();
     void StartPrediction(const FVector& Spawn);
     uint32 ServerNowMs() const;
@@ -82,6 +82,7 @@ private:
     static constexpr double PingInterval = .2;
     static constexpr int32 ClockWindow = 5;
     uint32 AutoDodgeTurn = 0; // -AscensionNetAutoDodge 시험 옵션
+    double AutoDodgeAt = 0;   // 자동 회피를 누를 실제 시각(0 = 없음)
 
     double NextInputSend = 0, NextPing = 0;
     // 로컬 시계 - 서버 시계. 가장 작은(지연이 가장 적은) 값을 쓴다.

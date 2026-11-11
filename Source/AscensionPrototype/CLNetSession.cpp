@@ -164,6 +164,7 @@ struct FCLPrediction
     TArray<Proto::InputCommand> Outgoing;   // 아직 보내지 않은 입력
     uint32 Sequence = 0;
     double Accumulator = 0;
+    double LastRealTime = 0; // 이동 틱은 게임 시간이 아니라 실제 시간으로 센다(서버의 초당 60틱과 맞춘다)
     FVector2D VisualOffset = FVector2D::ZeroVector; // 재조정 차이를 화면에서 녹이는 값
     double GroundZ = AscMove::kGroundZ;
     bool bDodgeQueued = false;
@@ -228,7 +229,12 @@ void ACLNetSession::Tick(float Delta)
     if (State != EState::InRoom) return;
 
     const double Now = FPlatformTime::Seconds();
-    TickPrediction(Delta);
+    TickPrediction();
+    if (AutoDodgeAt > 0 && Now >= AutoDodgeAt)
+    {
+        AutoDodgeAt = 0;
+        if (ACLHero* Hero = LocalHero()) Hero->Dodge();
+    }
     if (Now >= NextInputSend)
     {
         NextInputSend = Now + InputSendInterval;
@@ -245,7 +251,8 @@ void ACLNetSession::Tick(float Delta)
         NextPing = Now + PingInterval;
         auto Ping = Proto::Make<Proto::C_Ping>();
         Ping.clientTimeMs = NowMs();
-        Ping.lastRttMs = RttMs; // 서버가 판정 유예(되감기 허용량)를 정하는 데 쓴다
+        // 서버가 판정 유예(되감기 허용량)를 정하는 데 쓴다. 0은 "아직 잰 적 없음"이라, 같은 PC처럼 1ms 미만이어도 잰 뒤에는 1 이상으로 알린다.
+        Ping.lastRttMs = ClockSamples.Num() > 0 ? FMath::Max<uint32>(1, RttMs) : 0;
         SendPacket(Ping);
     }
 
@@ -409,11 +416,8 @@ void ACLNetSession::HandlePacket(const TArray<uint8>& Bytes, double ReceivedAt)
         // 시험 옵션 -AscensionNetAutoDodge: 나를 노린 공격을 하나 걸러 하나씩 무적 구간 가운데에 맞춰 실제 회피 입력을 낸다.
         if (bTargetsMe && FParse::Param(FCommandLine::Get(), TEXT("AscensionNetAutoDodge")) && (AutoDodgeTurn++ % 2 == 0))
         {
-            const float Delay = FMath::Max(0.f, (HitInMs - IframeMs / 2) / 1000.f);
-            FTimerHandle Handle;
-            GetWorldTimerManager().SetTimer(Handle, FTimerDelegate::CreateWeakLambda(this, [this] {
-                if (ACLHero* Hero = LocalHero()) Hero->Dodge();
-            }), FMath::Max(Delay, .001f), false);
+            // 실제 시간으로 잰다. 게임 시간은 히트 스톱이나 2000fps 초과(언리얼의 최소 프레임 시간 0.5ms)에서 실제와 달라진다.
+            AutoDodgeAt = FPlatformTime::Seconds() + FMath::Max(0, HitInMs - IframeMs / 2) / 1000.0 + 1e-6;
         }
         break;
     }
@@ -456,6 +460,7 @@ void ACLNetSession::StartPrediction(const FVector& Spawn)
     P.Pending.Reset();
     P.Outgoing.Reset();
     P.Accumulator = 0;
+    P.LastRealTime = 0;
     P.VisualOffset = FVector2D::ZeroVector;
 
     // 바닥 높이: 서버 이동은 2D라 높이는 바닥에 선 캡슐 중심으로 고정한다.
@@ -471,7 +476,7 @@ void ACLNetSession::StartPrediction(const FVector& Spawn)
     Hero->SetActorLocation(FVector(Spawn.X, Spawn.Y, P.GroundZ), false, nullptr, ETeleportType::TeleportPhysics);
 }
 
-void ACLNetSession::TickPrediction(float Delta)
+void ACLNetSession::TickPrediction()
 {
     ACLHero* Hero = LocalHero();
     if (!Prediction || !Hero || !Hero->bNetMovement) return;
@@ -480,7 +485,12 @@ void ACLNetSession::TickPrediction(float Delta)
     // 시험 옵션 -AscensionNetAutoMove: 원을 그리며 달리고 2.5초마다 회피한다(화면 없는 예측 검증용).
     static const bool bAutoMove = FParse::Param(FCommandLine::Get(), TEXT("AscensionNetAutoMove"));
 
-    P.Accumulator += FMath::Min(Delta, .25f); // 긴 멈춤 뒤 몰아서 돌지 않는다
+    // 실제 경과 시간. 액터 Tick의 Delta는 게임 시간이라 히트 스톱·시간 배율·프레임 시간 하한(2000fps 초과)에서
+    // 실제보다 빠르거나 느리게 흐르고, 그러면 서버(실제 시간 기준 초당 60틱)와 입력 수가 어긋난다.
+    const double RealNow = FPlatformTime::Seconds();
+    const double Delta = P.LastRealTime > 0 ? RealNow - P.LastRealTime : 0;
+    P.LastRealTime = RealNow;
+    P.Accumulator += FMath::Min(Delta, .25); // 긴 멈춤 뒤 몰아서 돌지 않는다
     while (P.Accumulator >= AscMove::kTick)
     {
         P.Accumulator -= AscMove::kTick;
