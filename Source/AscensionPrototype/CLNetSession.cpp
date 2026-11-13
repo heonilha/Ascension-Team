@@ -261,6 +261,14 @@ void ACLNetSession::Tick(float Delta)
     {
         if (IsValid(Pair.Value)) Pair.Value->UpdateVisual(RenderTime, Delta);
     }
+    TickMonsters(RenderTime, Delta);
+    TickAutoHunt(Now);
+    if (Now >= NextMonsterLog && MonsterBatches > 0)
+    {
+        NextMonsterLog = Now + 5.0;
+        UE_LOG(LogTemp, Display, TEXT("ASCENSION_NET_MONSTERS alive=%d batches=%u waves=%u/%u my_hits=%u my_kills=%u deaths=%u respawns=%u"), Monsters.Num(),
+               MonsterBatches, WavesConfirmed, WavesSent, MyMonsterHits, MyKills, Deaths, Respawns);
+    }
 }
 
 void ACLNetSession::HandlePacket(const TArray<uint8>& Bytes, double ReceivedAt)
@@ -335,10 +343,7 @@ void ACLNetSession::HandlePacket(const TArray<uint8>& Bytes, double ReceivedAt)
         Proto::S_MoveBatch Packet;
         if (!ReadFixed(Bytes, Packet, false) || Bytes.Num() != int32(sizeof(Packet) + Packet.count * sizeof(Proto::MoveEntry))) break;
         const double ServerTime = Packet.serverTick * (Proto::kServerTickMs / 1000.0);
-        const double Offset = ReceivedAt - ServerTime;
-        // 늦게 도착한 패킷일수록 Offset이 크다. 가장 작은 값을 따라가되 시계 차이를 조금씩 허용한다.
-        ServerClockOffset = bHasClock ? FMath::Min(Offset, ServerClockOffset + .001) : Offset;
-        bHasClock = true;
+        UpdateServerClock(Packet.serverTick, ReceivedAt);
         for (int32 I = 0; I < Packet.count; ++I)
         {
             const Proto::MoveEntry Entry = ReadEntry<Proto::MoveEntry>(Bytes, sizeof(Packet) + I * sizeof(Proto::MoveEntry));
@@ -361,12 +366,16 @@ void ACLNetSession::HandlePacket(const TArray<uint8>& Bytes, double ReceivedAt)
         {
             // 같은 입력까지의 내 예측과 서버 확정 위치의 차이(같은 코드라 보통 0)
             const float PredictionError = FMath::Sqrt(FMath::Square(P.Pending[Done].After.x - Confirmed.x) + FMath::Square(P.Pending[Done].After.y - Confirmed.y));
-            P.MaxError = FMath::Max(P.MaxError, PredictionError);
-            if (PredictionError > .5f) ++P.Corrections;
+            if (!bSkipNextAckCompare)
+            {
+                P.MaxError = FMath::Max(P.MaxError, PredictionError);
+                if (PredictionError > .5f) ++P.Corrections;
+            }
             ++Done;
         }
         P.Pending.RemoveAt(0, Done, EAllowShrinking::No);
 
+        bSkipNextAckCompare = false;
         // 확정 상태에서 남은 입력을 다시 돌린다. 화면은 이어지게 두고 차이만 서서히 녹인다.
         const AscMove::State Before = P.Sim;
         P.Sim = Confirmed;
@@ -398,26 +407,149 @@ void ACLNetSession::HandlePacket(const TArray<uint8>& Bytes, double ReceivedAt)
         }
         break;
     }
+    case Proto::PacketId::S_MonsterBatch:
+    {
+        Proto::S_MonsterBatch Packet;
+        if (!ReadFixed(Bytes, Packet, false) || Bytes.Num() != int32(sizeof(Packet) + Packet.count * sizeof(Proto::MonsterEntry))) break;
+        UpdateServerClock(Packet.serverTick, ReceivedAt);
+        const double ServerTime = Packet.serverTick * (Proto::kServerTickMs / 1000.0);
+        ++MonsterBatches;
+        // 서버가 살아 있는 몬스터 전부를 보낸다: 처음 보는 것은 만들고, 목록에서 빠진 것은 지운다.
+        TSet<uint16> Alive;
+        for (int32 I = 0; I < Packet.count; ++I)
+        {
+            const Proto::MonsterEntry Entry = ReadEntry<Proto::MonsterEntry>(Bytes, sizeof(Packet) + I * sizeof(Proto::MonsterEntry));
+            Alive.Add(Entry.id);
+            const FVector Position(Entry.x, Entry.y, 82.0); // 몬스터 캡슐 반높이 80
+            const float Yaw = Entry.yaw * 360.f / 256.f;
+            ACLEnemy* Enemy = FindMonster(Entry.id);
+            if (!Enemy)
+            {
+                FActorSpawnParameters Params;
+                Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+                Enemy = GetWorld()->SpawnActor<ACLEnemy>(Position, FRotator(0, Yaw, 0), Params);
+                if (!Enemy) continue;
+                Enemy->InitPuppet(Entry.kind);
+                Monsters.Add(Entry.id, Enemy);
+            }
+            Enemy->PushNetSample(ServerTime, Position, Yaw, uint8(Entry.state), float(Entry.hp));
+        }
+        for (auto It = Monsters.CreateIterator(); It; ++It)
+        {
+            if (Alive.Contains(It.Key())) continue;
+            if (IsValid(It.Value())) It.Value()->Destroy();
+            It.RemoveCurrent();
+        }
+        break;
+    }
+    case Proto::PacketId::S_MonsterHit:
+    {
+        Proto::S_MonsterHit Packet;
+        if (!ReadFixed(Bytes, Packet)) break;
+        if (Packet.attackerId == MyId)
+        {
+            ++MyMonsterHits;
+            if (Packet.hpAfter == 0) ++MyKills;
+        }
+        if (ACLEnemy* Enemy = FindMonster(Packet.monsterId))
+        {
+            Enemy->ShowNetHit(Packet.damage, float(Packet.hpAfter));
+            if (Packet.hpAfter == 0)
+            {
+                Enemy->Destroy();
+                Monsters.Remove(Packet.monsterId);
+            }
+        }
+        break;
+    }
+    case Proto::PacketId::S_WaveSpawn:
+    {
+        Proto::S_WaveSpawn Packet;
+        if (!ReadFixed(Bytes, Packet)) break;
+        if (Packet.ownerId == MyId)
+        {
+            ++WavesConfirmed; // 내 검기는 쏜 순간 이미 화면에 있다
+            break;
+        }
+        RemoteWaves.Add({Packet.waveId, FVector(Packet.x, Packet.y, 100), FRotator(0, Packet.yaw, 0).Vector(), Packet.radius, Packet.speed, Packet.charge,
+                         FPlatformTime::Seconds() + Packet.lifeMs / 1000.0});
+        break;
+    }
+    case Proto::PacketId::S_WaveEnd:
+    {
+        Proto::S_WaveEnd Packet;
+        if (ReadFixed(Bytes, Packet)) RemoteWaves.RemoveAll([&](const FRemoteWave& Wave) { return Wave.Id == Packet.waveId; });
+        break;
+    }
+    case Proto::PacketId::S_Respawn:
+    {
+        Proto::S_Respawn Packet;
+        if (!ReadFixed(Bytes, Packet) || Packet.playerId != MyId) break;
+        // 서버가 시작 위치로 옮겼다. 이미 보낸 입력의 예측은 옛 위치 기준이라 다음 확정과 비교하지 않는다.
+        ++Respawns;
+        bSkipNextAckCompare = true;
+        StartPrediction(ToFVector(Packet.position));
+        UE_LOG(LogTemp, Display, TEXT("ASCENSION_NET_RESPAWN hp=%.0f"), Packet.hp);
+        break;
+    }
+    case Proto::PacketId::S_AttackCancel:
+    {
+        Proto::S_AttackCancel Packet;
+        if (!ReadFixed(Bytes, Packet)) break;
+        uint16 MonsterId = 0;
+        if (TellAttacks.RemoveAndCopyValue(Packet.attackId, MonsterId))
+        {
+            if (ACLEnemy* Enemy = FindMonster(MonsterId)) Enemy->CancelNetTell();
+        }
+        if (AutoDodgeAttack == Packet.attackId) AutoDodgeAt = 0; // 끊긴 공격은 피하지 않는다
+        break;
+    }
     case Proto::PacketId::S_AttackStart:
     {
         Proto::S_AttackStart Packet;
         if (!ReadFixed(Bytes, Packet)) break;
         // 서버가 정한 명중 시각까지 남은 시간만큼 예고를 보여 준다(패킷이 늦게 왔으면 그만큼 짧다).
         const int32 HitInMs = int32(Packet.hitServerMs) - int32(ServerNowMs());
-        const FVector Center = ToFVector(Packet.center) - FVector(0, 0, 85);
-        DrawDebugCircle(GetWorld(), Center, Packet.radius, 48, Packet.kind == Proto::AttackKind::Slam ? FColor::Orange : FColor::Red, false,
-                        FMath::Max(.05f, HitInMs / 1000.f), 0, 4.f, FVector(1, 0, 0), FVector(0, 1, 0), false);
-        const bool bTargetsMe = Packet.attackerId != MyId && LocalHero() &&
-                                FVector::Dist2D(LocalHero()->GetActorLocation(), ToFVector(Packet.center)) <= Packet.radius;
-        if (bTargetsMe) LocalHero()->Notice = FString::Printf(TEXT("공격 예고! %.2f초 뒤 명중 · 회피 무적 %.2f초"), HitInMs / 1000.f, IframeMs / 1000.f);
-        UE_LOG(LogTemp, Display, TEXT("ASCENSION_NET_ATTACK id=%u attacker=%u kind=%d hit_in=%dms"), Packet.attackId, Packet.attackerId,
-               int32(Packet.kind), HitInMs);
+        const ACLHero* Hero = LocalHero();
+        const FVector To = Hero ? (Hero->GetActorLocation() - ToFVector(Packet.center)) * FVector(1, 1, 0) : FVector::ZeroVector;
+        const FVector Facing = FRotator(0, Packet.yaw, 0).Vector();
+        bool bTargetsMe = false;
+        int32 MyHitInMs = HitInMs; // 내가 맞는 시각까지(돌진은 거리에 따라 늦어진다)
+        if (Packet.monsterId != 0)
+        {
+            // 몬스터 공격: 그 몬스터가 예고 자세를 잡고 부채꼴·돌진 길을 그린다(보간 지연 없이, 명중 시각까지).
+            if (TellAttacks.Num() > 256) TellAttacks.Reset();
+            TellAttacks.Add(Packet.attackId, Packet.monsterId);
+            const bool bSecondStrike = Packet.kind == Proto::AttackKind::MonsterArc && Packet.hitServerMs - Packet.startServerMs < 500;
+            if (ACLEnemy* Enemy = FindMonster(Packet.monsterId)) Enemy->ShowNetTell(Packet.yaw, FPlatformTime::Seconds() + HitInMs / 1000.0, bSecondStrike);
+            if (Packet.kind == Proto::AttackKind::MonsterCharge)
+            {
+                // 돌진 길 위에 있으면: 출발 시각 + 내 위치까지 달려오는 시간(1200cm/s). 닿는 거리 105cm.
+                const double Along = FVector::DotProduct(To, Facing), Side = FVector::CrossProduct(To, Facing).Size();
+                bTargetsMe = Hero && Along > -105 && Along < Packet.radius + 105 && Side < 105;
+                MyHitInMs = HitInMs + int32(FMath::Max(0.0, Along - 105) / 1.2);
+            }
+            else bTargetsMe = Hero && To.Size() <= Packet.radius && FVector::DotProduct(To.GetSafeNormal(), Facing) >= FMath::Cos(FMath::DegreesToRadians(Packet.halfAngle));
+        }
+        else
+        {
+            DrawDebugCircle(GetWorld(), ToFVector(Packet.center) - FVector(0, 0, 85), Packet.radius, 48,
+                            Packet.kind == Proto::AttackKind::Slam ? FColor::Orange : FColor::Red, false, FMath::Max(.05f, HitInMs / 1000.f), 0, 4.f,
+                            FVector(1, 0, 0), FVector(0, 1, 0), false);
+            bTargetsMe = Packet.attackerId != MyId && Hero && To.Size() <= Packet.radius;
+        }
+        if (bTargetsMe && Packet.monsterId == 0)
+            LocalHero()->Notice = FString::Printf(TEXT("공격 예고! %.2f초 뒤 명중 · 회피 무적 %.2f초"), HitInMs / 1000.f, IframeMs / 1000.f);
+        if (bTargetsMe || Packet.monsterId == 0)
+            UE_LOG(LogTemp, Display, TEXT("ASCENSION_NET_ATTACK id=%u attacker=%u monster=%u kind=%d hit_in=%dms"), Packet.attackId, Packet.attackerId,
+                   uint32(Packet.monsterId), int32(Packet.kind), MyHitInMs);
 
         // 시험 옵션 -AscensionNetAutoDodge: 나를 노린 공격을 하나 걸러 하나씩 무적 구간 가운데에 맞춰 실제 회피 입력을 낸다.
         if (bTargetsMe && FParse::Param(FCommandLine::Get(), TEXT("AscensionNetAutoDodge")) && (AutoDodgeTurn++ % 2 == 0))
         {
             // 실제 시간으로 잰다. 게임 시간은 히트 스톱이나 2000fps 초과(언리얼의 최소 프레임 시간 0.5ms)에서 실제와 달라진다.
-            AutoDodgeAt = FPlatformTime::Seconds() + FMath::Max(0, HitInMs - IframeMs / 2) / 1000.0 + 1e-6;
+            AutoDodgeAt = FPlatformTime::Seconds() + FMath::Max(0, MyHitInMs - IframeMs / 2) / 1000.0 + 1e-6;
+            AutoDodgeAttack = Packet.attackId;
         }
         break;
     }
@@ -429,8 +561,10 @@ void ACLNetSession::HandlePacket(const TArray<uint8>& Bytes, double ReceivedAt)
         if (Packet.targetId == MyId)
         {
             (bDodged ? ServerDodges : ServerHits)++;
+            if (Packet.hpAfter <= 0.f) ++Deaths;
             if (ACLHero* Hero = LocalHero()) Hero->ApplyServerHit(bDodged, Packet.damage, Packet.rewindMs);
         }
+        if (Packet.targetId == MyId) // 다른 플레이어의 판정은 기록하지 않는다(몬스터가 많으면 로그가 넘친다)
         UE_LOG(LogTemp, Display, TEXT("ASCENSION_NET_HIT id=%u target=%u%s result=%s damage=%.0f server_hp=%.0f local_hp=%.0f dodge_before_hit=%dms rewind=%ums"),
                Packet.attackId, Packet.targetId, Packet.targetId == MyId ? TEXT("(me)") : TEXT(""), bDodged ? TEXT("dodged") : TEXT("hit"),
                Packet.damage, Packet.hpAfter, LocalHero() ? LocalHero()->HP : -1.f,
@@ -572,6 +706,98 @@ void ACLNetSession::SendDodge(const FVector& Direction)
     SendPacket(Dodge);
 }
 
+void ACLNetSession::SendWave(float Yaw, bool bHeavy, float Charge)
+{
+    if (State != EState::InRoom || bPvp) return;
+    auto Attack = Proto::Make<Proto::C_Attack>();
+    Attack.sequence = ++AttackSequence;
+    Attack.pressServerMs = ServerNowMs();
+    Attack.yaw = Yaw;
+    Attack.kind = bHeavy ? Proto::AttackKind::HeavyWave : Proto::AttackKind::Wave;
+    Attack.charge = bHeavy ? Charge : 0.f;
+    SendPacket(Attack);
+    ++WavesSent;
+}
+
+void ACLNetSession::SendRespawn()
+{
+    if (State != EState::InRoom) return;
+    SendPacket(Proto::Make<Proto::C_Respawn>());
+}
+
+void ACLNetSession::UpdateServerClock(uint32 ServerTick, double ReceivedAt)
+{
+    // 서버 틱 번호 × 50ms = 서버 시간. 늦게 도착한 패킷일수록 차이가 크므로 가장 작은 값을 따라가되 시계 차이를 조금씩 허용한다.
+    const double Offset = ReceivedAt - ServerTick * (Proto::kServerTickMs / 1000.0);
+    ServerClockOffset = bHasClock ? FMath::Min(Offset, ServerClockOffset + .001) : Offset;
+    bHasClock = true;
+}
+
+ACLEnemy* ACLNetSession::FindMonster(uint16 Id) const
+{
+    const TObjectPtr<ACLEnemy>* Found = Monsters.Find(Id);
+    return Found && IsValid(*Found) ? Found->Get() : nullptr;
+}
+
+void ACLNetSession::TickMonsters(double RenderTime, float Delta)
+{
+    for (const auto& Pair : Monsters)
+    {
+        if (IsValid(Pair.Value)) Pair.Value->UpdatePuppet(RenderTime, Delta);
+    }
+    // 다른 플레이어의 검기: 판정은 서버가 하고 여기서는 날아가는 모습만 그린다(1인 데모의 검기와 같은 모양).
+    const double Now = FPlatformTime::Seconds();
+    for (int32 I = RemoteWaves.Num() - 1; I >= 0; --I)
+    {
+        FRemoteWave& Wave = RemoteWaves[I];
+        if (Now >= Wave.EndTime)
+        {
+            RemoteWaves.RemoveAtSwap(I);
+            continue;
+        }
+        Wave.Position += Wave.Direction * Wave.Speed * Delta;
+        const FColor Color = Wave.Radius > 60 ? FColor(255, 200, 70) : FColor::Cyan;
+        for (int32 Step = 0; Step < 12; ++Step)
+        {
+            const FVector A = Wave.Position + Wave.Direction.RotateAngleAxis(-65 + 130.f * Step / 12, FVector::UpVector) * Wave.Radius;
+            const FVector B = Wave.Position + Wave.Direction.RotateAngleAxis(-65 + 130.f * (Step + 1) / 12, FVector::UpVector) * Wave.Radius;
+            DrawDebugLine(GetWorld(), A, B, Color, false, .05f, 0, 7 + Wave.Charge * 6);
+        }
+    }
+}
+
+// 시험 옵션 -AscensionNetAutoHunt: 가장 가까운 몬스터를 향해 0.8초마다 실제 공격 입력을 내고, 죽으면 1초 뒤 다시 시작한다.
+void ACLNetSession::TickAutoHunt(double Now)
+{
+    static const bool bAutoHunt = FParse::Param(FCommandLine::Get(), TEXT("AscensionNetAutoHunt"));
+    ACLHero* Hero = LocalHero();
+    if (!bAutoHunt || !Hero) return;
+    if (Hero->HP <= 0)
+    {
+        if (DeadSince == 0) DeadSince = Now;
+        else if (Now - DeadSince > 1.0)
+        {
+            DeadSince = 0;
+            Hero->ResetLife();
+        }
+        return;
+    }
+    DeadSince = 0;
+    if (Now < NextAutoHunt) return;
+    NextAutoHunt = Now + .8;
+    const ACLEnemy* Nearest = nullptr;
+    double Best = 1300;
+    for (const auto& Pair : Monsters)
+    {
+        if (!IsValid(Pair.Value)) continue;
+        const double Distance = FVector::Dist2D(Pair.Value->GetActorLocation(), Hero->GetActorLocation());
+        if (Distance < Best) Best = Distance, Nearest = Pair.Value;
+    }
+    if (!Nearest || !Hero->GetController()) return;
+    Hero->GetController()->SetControlRotation(FRotator(-30, (Nearest->GetActorLocation() - Hero->GetActorLocation()).Rotation().Yaw, 0));
+    Hero->Attack();
+}
+
 void ACLNetSession::SendAttack(float Yaw)
 {
     if (State != EState::InRoom || !bPvp) return; // PvE 몬스터는 아직 서버에 없다
@@ -616,6 +842,12 @@ void ACLNetSession::Fail(const FString& Reason)
         if (IsValid(Pair.Value)) Pair.Value->Destroy();
     }
     Remotes.Empty();
+    for (const auto& Pair : Monsters)
+    {
+        if (IsValid(Pair.Value)) Pair.Value->Destroy();
+    }
+    Monsters.Empty();
+    RemoteWaves.Empty();
     if (ACLHero* Hero = LocalHero(); Hero && Hero->bNetMovement)
     {
         // 서버 연결이 끊기면 언리얼 이동으로 돌아간다

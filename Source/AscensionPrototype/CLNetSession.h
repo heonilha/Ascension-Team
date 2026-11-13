@@ -17,6 +17,7 @@
 #include "GameFramework/Actor.h"
 #include "CLNetSession.generated.h"
 
+class ACLEnemy;
 class ACLHero;
 class ACLRemoteHero;
 class FCLNetReceiver;
@@ -40,6 +41,10 @@ public:
     // 로컬에서 회피·공격을 시작한 순간 부른다. 판정은 서버 결과(S_HitResult)로 받는다.
     void SendDodge(const FVector& Direction);
     void SendAttack(float Yaw);
+    // PvE: 검기가 나가는 순간 부른다. 몬스터 명중·피해는 서버가 판정한다.
+    void SendWave(float Yaw, bool bHeavy, float Charge);
+    // 죽은 뒤 다시 시작할 때 부른다. 서버가 시작 위치로 옮긴다.
+    void SendRespawn();
 
     // 원격 플레이어를 서버 시간보다 이만큼 늦게 그려서 두 스냅샷 사이를 보간한다(서버 2틱).
     static constexpr double InterpolationDelay = .1;
@@ -54,6 +59,10 @@ private:
     void TickPrediction();
     void SendInputs();
     void StartPrediction(const FVector& Spawn);
+    void UpdateServerClock(uint32 ServerTick, double ReceivedAt);
+    void TickMonsters(double RenderTime, float Delta);
+    void TickAutoHunt(double Now);
+    ACLEnemy* FindMonster(uint16 Id) const;
     uint32 ServerNowMs() const;
     void SpawnRemote(uint32 Id, const char* Name, const FVector& Position, float Yaw);
     void RemoveRemote(uint32 Id);
@@ -90,4 +99,24 @@ private:
     bool bHasClock = false;
 
     UPROPERTY() TMap<uint32, TObjectPtr<ACLRemoteHero>> Remotes;
+
+    // 서버 몬스터의 겉모습(꼭두각시 ACLEnemy). 목록에서 빠진 몬스터는 지운다.
+    UPROPERTY() TMap<uint16, TObjectPtr<ACLEnemy>> Monsters;
+    TMap<uint32, uint16> TellAttacks; // 예고 중인 공격 → 몬스터(취소 처리용)
+    uint32 MonsterBatches = 0, MyMonsterHits = 0, MyKills = 0, Deaths = 0, Respawns = 0;
+    uint32 WavesSent = 0, WavesConfirmed = 0; // 보낸 검기 / 서버가 인정한 검기
+    double NextMonsterLog = 0;
+    uint32 AutoDodgeAttack = 0;       // 자동 회피를 걸어 둔 공격(취소되면 회피도 취소)
+    double NextAutoHunt = 0, DeadSince = 0;
+    bool bSkipNextAckCompare = false; // 부활 직후 첫 확정은 옛 위치 기준 예측과 비교하지 않는다
+
+    // 다른 플레이어의 검기(연출만)
+    struct FRemoteWave
+    {
+        uint32 Id;
+        FVector Position, Direction;
+        float Radius, Speed, Charge;
+        double EndTime;
+    };
+    TArray<FRemoteWave> RemoteWaves;
 };
