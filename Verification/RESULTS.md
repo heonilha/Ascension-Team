@@ -55,5 +55,3 @@ BladeWave.png 실제 렌더링에서 이동 중 청록색 검기와 체력/경�
 2026-10-27 공동 작성 표기: OpenAI 공개 저장소의 실제 Codex 공동 작성 커밋과 표기 예시, GitHub 트레일러 설명을 확인했다. 문서 및 작업 규칙만 변경했으며 git diff --check로 형식을 검사한다. 게임 코드·에셋 변경이 없어 빌드·전투 검사는 재실행하지 않는다. 커밋 작성 후 트레일러 파싱과 원격 업로드를 확인하며 과거 이력을 재작성하지 않는다.
 
 2026-11-14 팀 에셋 가이드: 프로젝트 파일과 CombatLab 경로, 바이너리 Git 속성, 문서 링크를 확인했다. 문서 변경으로 에디터를 다시 실행하지 않았다.
-
-2026-11-14 공통 기사 모델 정제 검증: Blender 5.2.2에서 내보낸 FBX를 다시 읽어 쿼드36,762/삼각형0, 본24개 이름·길이 일치, 정점 그룹23개, UV 섬353개 유지, 높이1.8m를 확인했다. 프로젝트 사본에서 Scripts/ImportRefinedKnight.py 실행: 본25개(루트 Armature 포함) 일치, 기준 자세 최대 오차0.00007, 스켈레톤 에셋 바이트 동일, 애니메이션5종 스켈레톤 일치, LOD4단계 생성, ASC_REFINE_COMPLETE. 같은 사본에서 -AscensionVerify 실행 결과 ASCENSION_VERIFY PASS wall_trials=20. -AscensionMotionView로 달리기·공격·회피 화면을 저장해 메시 깨짐이 없음을 직접 확인하고 MotionRun/MotionAttack/MotionRoll.png를 갱신했다. 원본 에셋으로 같은 장면을 찍어 비교했으며 게임 시점 거리에서는 외형 차이가 거의 없다. SharedKnightRefine.png는 Blender 근접 렌더링의 전후 비교(와이어·텍스처)다. C++ 변경이 없어 빌드와 VerifyCombat/VerifySurvival/VerifyBoss는 재실행하지 않았다. 에디터 뷰포트에서 LOD 전환 거리와 실제 조작 중 관절 변형은 확인하지 않았다. Meshy 추가 사용0.
