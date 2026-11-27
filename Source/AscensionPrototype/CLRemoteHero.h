@@ -16,7 +16,10 @@ public:
     ACLRemoteHero();
     virtual void BeginPlay() override;
 
-    void Init(uint32 InPlayerId, const FString& InName);
+    // bAlly: 같은 팀(이름표 초록), 아니면 적(빨강). 매치가 아니면 모두 같은 편
+    void Init(uint32 InPlayerId, const FString& InName, uint8 InTeam, bool bInAlly);
+    uint8 Team = 0;
+    bool bAlly = true;
     // 서버 시간 ServerTime(초)의 위치를 기록한다.
     void PushSample(double ServerTime, const FVector& Position, float Yaw, uint8 State);
     // ACLNetSession이 매 프레임 부른다. RenderTime(서버 시간)의 위치를 보간해 그린다.

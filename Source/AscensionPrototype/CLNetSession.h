@@ -34,16 +34,26 @@ public:
     virtual void EndPlay(const EEndPlayReason::Type Reason) override;
     virtual void BeginDestroy() override;
 
-    // HostPort 예: "127.0.0.1:7777". 모드와 TeamCode가 같은 플레이어끼리 같은 방에 들어간다.
-    void Connect(const FString& HostPort, const FString& InPlayerName, uint32 InTeamCode, bool bInPvp);
+    // HostPort 예: "127.0.0.1:7777". 모드와 판 번호(MatchCode)가 같은 플레이어끼리 같은 방에 들어간다.
+    // 매치(bInMatch)에서는 InTeam(1~4)이 소속 팀이다. 연습 방(개발 시험용)은 팀을 쓰지 않는다.
+    void Connect(const FString& HostPort, const FString& InPlayerName, uint32 InMatchCode, uint8 InTeam, bool bInMatch);
     FString StatusText() const;
+
+    // ---- 매치 진행(S_MatchState·S_PlayerDied). HUD가 읽는다 ----
+    bool InMatch() const { return bMatch && State == EState::InRoom && Match.bValid; }
+    FString MatchText() const;   // 한 줄 요약: 단계·라운드·남은 시간·자기장·남은 팀
+    FString MatchBanner() const; // 화면 가운데 큰 글씨: 카운트다운·승리·부활 대기·탈락(없으면 빈 문자열)
+    float ZoneRadiusNow() const;
+    FVector2D ZoneCenter() const { return Match.Center; }
+    bool IsOutsideZone(const FVector& Position) const;
+    uint8 MyTeam = 1;
 
     // 로컬에서 회피·공격을 시작한 순간 부른다. 판정은 서버 결과(S_HitResult)로 받는다.
     void SendDodge(const FVector& Direction);
     void SendAttack(float Yaw);
     // PvE: 검기가 나가는 순간 부른다. 몬스터 명중·피해는 서버가 판정한다.
     void SendWave(float Yaw, bool bHeavy, float Charge);
-    // 죽은 뒤 다시 시작할 때 부른다. 서버가 시작 위치로 옮긴다.
+    // 연습 방: 죽은 뒤 다시 시작할 때 부른다. 서버가 시작 위치로 옮긴다(매치는 서버가 부활 대기 뒤 스스로 부활시킨다).
     void SendRespawn();
 
     // 원격 플레이어를 서버 시간보다 이만큼 늦게 그려서 두 스냅샷 사이를 보간한다(서버 2틱).
@@ -64,7 +74,9 @@ private:
     void TickAutoHunt(double Now);
     ACLEnemy* FindMonster(uint16 Id) const;
     uint32 ServerNowMs() const;
-    void SpawnRemote(uint32 Id, const char* Name, const FVector& Position, float Yaw);
+    void SpawnRemote(uint32 Id, const char* Name, const FVector& Position, float Yaw, uint8 Team);
+    void DrawZone() const;
+    double SecondsUntil(uint32 ServerMs) const;
     void RemoveRemote(uint32 Id);
     void Fail(const FString& Reason);
     void Shutdown();
@@ -78,7 +90,18 @@ private:
     uint32 TeamCode = 0, MyId = 0, RttMs = 0;
     FCLPrediction* Prediction = nullptr; // Shutdown()에서 지운다
     double NextPredictionLog = 0;
-    bool bPvp = false;
+    bool bMatch = false;
+    struct FMatchView
+    {
+        bool bValid = false;
+        uint8 Phase = 0, Round = 0, TeamsAlive = 0, Winner = 0;
+        bool bRespawnAllowed = true;
+        uint32 PhaseStartMs = 0, PhaseEndMs = 0;
+        FVector2D Center = FVector2D::ZeroVector;
+        float RadiusFrom = 0, RadiusTo = 0, DamagePercent = 0;
+    } Match;
+    uint32 MyRespawnAtMs = 0; // 0 = 부활 대기 아님
+    bool bEliminated = false;
     uint8 Capacity = 3;
     uint16 IframeMs = 150, RewindCapMs = 200; // 서버가 S_EnterRoom으로 알려 준 모드 규칙
     uint32 DodgeSequence = 0, AttackSequence = 0, ServerDodges = 0, ServerHits = 0;

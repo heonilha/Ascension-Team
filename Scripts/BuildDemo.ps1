@@ -7,7 +7,7 @@ $taskProjectRoot = Split-Path -Parent $PSScriptRoot
 if ($BuildRoot -match '[^\x00-\x7F]') { throw 'BuildRoot must use an ASCII path.' }
 if ([IO.Path]::GetFullPath($BuildRoot) -eq [IO.Path]::GetFullPath($taskProjectRoot)) { throw 'Use a separate build copy.' }
 New-Item -ItemType Directory -Path $BuildRoot -Force | Out-Null
-foreach ($taskDirectory in @('Source','Config','Scripts','Content')) {
+foreach ($taskDirectory in @('Source','Config','Scripts','Content','Data')) {
     $taskInput = Join-Path $taskProjectRoot $taskDirectory
     if (Test-Path -LiteralPath $taskInput) {
         $taskOutput = Join-Path $BuildRoot $taskDirectory

@@ -179,7 +179,7 @@ ACLNetSession::ACLNetSession()
     PrimaryActorTick.bTickEvenWhenPaused = true; // 일시정지 중에도 수신 큐를 비운다
 }
 
-void ACLNetSession::Connect(const FString& HostPort, const FString& InPlayerName, uint32 InTeamCode, bool bInPvp)
+void ACLNetSession::Connect(const FString& HostPort, const FString& InPlayerName, uint32 InMatchCode, uint8 InTeam, bool bInMatch)
 {
     FString Host = HostPort, PortText;
     int32 Port = Proto::kDefaultPort;
@@ -187,9 +187,10 @@ void ACLNetSession::Connect(const FString& HostPort, const FString& InPlayerName
 
     ServerText = FString::Printf(TEXT("%s:%d"), *Host, Port);
     PlayerName = InPlayerName;
-    TeamCode = InTeamCode;
-    bPvp = bInPvp;
-    Capacity = bPvp ? Proto::kMaxPvpPlayers : Proto::kMaxRoomPlayers;
+    TeamCode = InMatchCode;
+    bMatch = bInMatch;
+    MyTeam = bMatch ? uint8(FMath::Clamp<int32>(InTeam, 1, Proto::kMaxTeams)) : 0;
+    Capacity = bMatch ? Proto::kMaxMatchPlayers : Proto::kMaxPracticePlayers;
 
     // 이동 예측에 서버와 같은 충돌 지형 파일을 쓴다.
     FString MapText;
@@ -205,13 +206,14 @@ void ACLNetSession::Connect(const FString& HostPort, const FString& InPlayerName
 
     Receiver = new FCLNetReceiver(Host, Port);
     Thread = FRunnableThread::Create(Receiver, TEXT("AscensionNetReceiver"));
-    UE_LOG(LogTemp, Display, TEXT("ASCENSION_NET_CONNECT %s name=%s team=%u mode=%s"), *ServerText, *PlayerName, TeamCode, bPvp ? TEXT("pvp") : TEXT("pve"));
+    UE_LOG(LogTemp, Display, TEXT("ASCENSION_NET_CONNECT %s name=%s match=%u team=%u mode=%s"), *ServerText, *PlayerName, TeamCode, uint32(MyTeam), bMatch ? TEXT("match") : TEXT("practice"));
 }
 
 void ACLNetSession::Tick(float Delta)
 {
     Super::Tick(Delta);
     if (!Receiver) return;
+    DrawZone();
 
     if (State == EState::Connecting && Receiver->bConnected)
     {
@@ -292,7 +294,8 @@ void ACLNetSession::HandlePacket(const TArray<uint8>& Bytes, double ReceivedAt)
         MyId = Packet.playerId;
         auto Enter = Proto::Make<Proto::C_EnterRoom>();
         Enter.teamCode = TeamCode;
-        Enter.mode = bPvp ? Proto::RoomMode::PvP : Proto::RoomMode::PvE;
+        Enter.mode = bMatch ? Proto::RoomMode::Match : Proto::RoomMode::Practice;
+        Enter.team = MyTeam;
         SendPacket(Enter);
         State = EState::Entering;
         break;
@@ -303,9 +306,10 @@ void ACLNetSession::HandlePacket(const TArray<uint8>& Bytes, double ReceivedAt)
         if (!ReadFixed(Bytes, Packet, false) || Bytes.Num() != int32(sizeof(Packet) + Packet.count * sizeof(Proto::PlayerInfo))) break;
         if (Packet.result != Proto::EnterResult::Ok)
         {
-            Fail(Packet.result == Proto::EnterResult::RoomFull
-                     ? FString::Printf(TEXT("방이 가득 찼습니다 (최대 %d명). 다른 팀 코드를 쓰세요."), Capacity)
-                     : FString(TEXT("방 입장 실패")));
+            Fail(Packet.result == Proto::EnterResult::RoomFull      ? FString::Printf(TEXT("방이 가득 찼습니다 (최대 %d명). 다른 판 번호를 쓰세요."), Capacity)
+                 : Packet.result == Proto::EnterResult::TeamFull    ? FString::Printf(TEXT("팀 %d이 가득 찼습니다 (팀당 %d명). 다른 팀을 고르세요."), MyTeam, Proto::kMaxTeamPlayers)
+                 : Packet.result == Proto::EnterResult::InvalidTeam ? FString(TEXT("팀 번호는 1~4입니다."))
+                                                                    : FString(TEXT("방 입장 실패")));
             break;
         }
         State = EState::InRoom;
@@ -319,17 +323,17 @@ void ACLNetSession::HandlePacket(const TArray<uint8>& Bytes, double ReceivedAt)
         for (int32 I = 0; I < Packet.count; ++I)
         {
             const Proto::PlayerInfo Info = ReadEntry<Proto::PlayerInfo>(Bytes, sizeof(Packet) + I * sizeof(Proto::PlayerInfo));
-            SpawnRemote(Info.playerId, Info.name, ToFVector(Info.position), Info.yaw);
+            SpawnRemote(Info.playerId, Info.name, ToFVector(Info.position), Info.yaw, Info.team);
         }
         NextInputSend = FPlatformTime::Seconds();
-        UE_LOG(LogTemp, Display, TEXT("ASCENSION_NET_ENTER team=%u id=%u others=%d mode=%s iframe=%ums rewind_cap=%ums"), TeamCode, MyId, Packet.count,
-               bPvp ? TEXT("pvp") : TEXT("pve"), IframeMs, RewindCapMs);
+        UE_LOG(LogTemp, Display, TEXT("ASCENSION_NET_ENTER match=%u team=%u id=%u others=%d mode=%s iframe=%ums rewind_cap=%ums"), TeamCode, uint32(MyTeam), MyId, Packet.count,
+               bMatch ? TEXT("match") : TEXT("practice"), IframeMs, RewindCapMs);
         break;
     }
     case Proto::PacketId::S_PlayerJoined:
     {
         Proto::S_PlayerJoined Packet;
-        if (ReadFixed(Bytes, Packet)) SpawnRemote(Packet.player.playerId, Packet.player.name, ToFVector(Packet.player.position), Packet.player.yaw);
+        if (ReadFixed(Bytes, Packet)) SpawnRemote(Packet.player.playerId, Packet.player.name, ToFVector(Packet.player.position), Packet.player.yaw, Packet.player.team);
         break;
     }
     case Proto::PacketId::S_PlayerLeft:
@@ -489,6 +493,9 @@ void ACLNetSession::HandlePacket(const TArray<uint8>& Bytes, double ReceivedAt)
         ++Respawns;
         bSkipNextAckCompare = true;
         StartPrediction(ToFVector(Packet.position));
+        MyRespawnAtMs = 0;
+        bEliminated = false;
+        if (ACLHero* Hero = LocalHero(); Hero && bMatch) Hero->ReviveOnline(Packet.hp); // 매치: 서버가 스스로 부활시켰다
         UE_LOG(LogTemp, Display, TEXT("ASCENSION_NET_RESPAWN hp=%.0f"), Packet.hp);
         break;
     }
@@ -569,6 +576,53 @@ void ACLNetSession::HandlePacket(const TArray<uint8>& Bytes, double ReceivedAt)
                Packet.attackId, Packet.targetId, Packet.targetId == MyId ? TEXT("(me)") : TEXT(""), bDodged ? TEXT("dodged") : TEXT("hit"),
                Packet.damage, Packet.hpAfter, LocalHero() ? LocalHero()->HP : -1.f,
                bDodged ? int32(Packet.hitServerMs) - int32(Packet.dodgeServerMs) : -1, uint32(Packet.rewindMs));
+        break;
+    }
+    case Proto::PacketId::S_MatchState:
+    {
+        Proto::S_MatchState Packet;
+        if (!ReadFixed(Bytes, Packet)) break;
+        const uint8 PreviousPhase = Match.Phase, PreviousRound = Match.Round;
+        Match.bValid = true;
+        Match.Phase = uint8(Packet.phase);
+        Match.Round = Packet.round;
+        Match.TeamsAlive = Packet.teamsAlive;
+        Match.Winner = Packet.winnerTeam;
+        Match.bRespawnAllowed = Packet.respawnAllowed != 0;
+        Match.PhaseStartMs = Packet.phaseStartServerMs;
+        Match.PhaseEndMs = Packet.phaseEndServerMs;
+        Match.Center = FVector2D(Packet.zoneX, Packet.zoneY);
+        Match.RadiusFrom = Packet.zoneRadiusFrom;
+        Match.RadiusTo = Packet.zoneRadiusTo;
+        Match.DamagePercent = Packet.zoneDamagePercent;
+        if (PreviousPhase != Match.Phase || PreviousRound != Match.Round)
+        {
+            UE_LOG(LogTemp, Display, TEXT("ASCENSION_NET_MATCH phase=%d round=%d teams=%d winner=%d radius=%.0f->%.0f damage=%.0f%%"), int32(Match.Phase),
+                   int32(Match.Round), int32(Match.TeamsAlive), int32(Match.Winner), Match.RadiusFrom, Match.RadiusTo, Match.DamagePercent);
+            if (Match.Phase == uint8(Proto::MatchPhase::Waiting)) bEliminated = false; // 다음 판
+        }
+        break;
+    }
+    case Proto::PacketId::S_PlayerDied:
+    {
+        Proto::S_PlayerDied Packet;
+        if (!ReadFixed(Bytes, Packet)) break;
+        const TCHAR* Cause = Packet.cause == Proto::DeathCause::Zone ? TEXT("자기장") : Packet.cause == Proto::DeathCause::Monster ? TEXT("몬스터") : TEXT("플레이어");
+        if (Packet.playerId == MyId)
+        {
+            MyRespawnAtMs = Packet.respawnServerMs;
+            bEliminated = Packet.respawnServerMs == 0;
+            if (ACLHero* Hero = LocalHero())
+                Hero->Notice = bEliminated ? FString::Printf(TEXT("%s에게 쓰러져 탈락했습니다. 남은 팀원을 지켜보세요."), Cause)
+                                           : FString::Printf(TEXT("%s에게 쓰러졌습니다. 잠시 뒤 자기장 안에서 부활합니다."), Cause);
+        }
+        else if (const TObjectPtr<ACLRemoteHero>* Remote = Remotes.Find(Packet.playerId); Remote && IsValid(*Remote))
+        {
+            if (ACLHero* Hero = LocalHero())
+                Hero->Notice = FString::Printf(TEXT("%s 쓰러짐(%s)%s"), *(*Remote)->DisplayName, Cause, Packet.respawnServerMs == 0 ? TEXT(" · 탈락") : TEXT(""));
+        }
+        UE_LOG(LogTemp, Display, TEXT("ASCENSION_NET_DIED id=%u killer=%u cause=%d respawn_in=%.1fs"), Packet.playerId, Packet.killerId, int32(Packet.cause),
+               Packet.respawnServerMs ? SecondsUntil(Packet.respawnServerMs) : -1.0);
         break;
     }
     default:
@@ -708,7 +762,7 @@ void ACLNetSession::SendDodge(const FVector& Direction)
 
 void ACLNetSession::SendWave(float Yaw, bool bHeavy, float Charge)
 {
-    if (State != EState::InRoom || bPvp) return;
+    if (State != EState::InRoom) return; // 검기는 두 모드 모두 서버 몬스터를 친다
     auto Attack = Proto::Make<Proto::C_Attack>();
     Attack.sequence = ++AttackSequence;
     Attack.pressServerMs = ServerNowMs();
@@ -800,7 +854,7 @@ void ACLNetSession::TickAutoHunt(double Now)
 
 void ACLNetSession::SendAttack(float Yaw)
 {
-    if (State != EState::InRoom || !bPvp) return; // PvE 몬스터는 아직 서버에 없다
+    if (State != EState::InRoom || !bMatch) return; // 근접 공격은 매치에서 다른 팀 플레이어를 친다
     auto Attack = Proto::Make<Proto::C_Attack>();
     Attack.sequence = ++AttackSequence;
     Attack.pressServerMs = ServerNowMs();
@@ -809,7 +863,7 @@ void ACLNetSession::SendAttack(float Yaw)
     SendPacket(Attack);
 }
 
-void ACLNetSession::SpawnRemote(uint32 Id, const char* Name, const FVector& Position, float Yaw)
+void ACLNetSession::SpawnRemote(uint32 Id, const char* Name, const FVector& Position, float Yaw, uint8 Team)
 {
     if (Id == MyId || Remotes.Contains(Id)) return;
     char Terminated[Proto::kNameLength + 1] = {};
@@ -819,9 +873,9 @@ void ACLNetSession::SpawnRemote(uint32 Id, const char* Name, const FVector& Posi
     Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
     if (ACLRemoteHero* Remote = GetWorld()->SpawnActor<ACLRemoteHero>(Position, FRotator(0, Yaw, 0), Params))
     {
-        Remote->Init(Id, UTF8_TO_TCHAR(Terminated));
+        Remote->Init(Id, UTF8_TO_TCHAR(Terminated), Team, !bMatch || Team == MyTeam);
         Remotes.Add(Id, Remote);
-        if (ACLHero* Hero = LocalHero()) Hero->Notice = FString::Printf(TEXT("%s 님이 같은 층에 들어왔습니다."), *Remote->DisplayName);
+        if (ACLHero* Hero = LocalHero()) Hero->Notice = FString::Printf(TEXT("%s 님이 들어왔습니다."), *Remote->DisplayName);
     }
 }
 
@@ -863,9 +917,10 @@ FString ACLNetSession::StatusText() const
     {
     case EState::Connecting: return FString::Printf(TEXT("온라인 · %s 접속 중..."), *ServerText);
     case EState::LoggingIn: return TEXT("온라인 · 로그인 중...");
-    case EState::Entering: return FString::Printf(TEXT("온라인 · 팀 %u 방 입장 중..."), TeamCode);
+    case EState::Entering: return FString::Printf(TEXT("온라인 · 판 %u 입장 중..."), TeamCode);
     case EState::InRoom:
-        return FString::Printf(TEXT("온라인 %s · 팀 %u · 같은 방 %d/%d명 · 지연 %ums · 무적 %.2f초%s%s"), bPvp ? TEXT("PvP") : TEXT("PvE"), TeamCode,
+        return FString::Printf(TEXT("온라인 %s · 판 %u · 같은 방 %d/%d명 · 지연 %ums · 무적 %.2f초%s%s"),
+                               bMatch ? *FString::Printf(TEXT("매치 · 내 팀 %d"), MyTeam) : TEXT("연습 방"), TeamCode,
                                Remotes.Num() + 1, Capacity, RttMs, IframeMs / 1000.f,
                                ServerDodges + ServerHits > 0 ? *FString::Printf(TEXT(" · 서버 판정 회피 %u/피격 %u"), ServerDodges, ServerHits) : TEXT(""),
                                Prediction && Prediction->Corrections > 0
@@ -908,4 +963,71 @@ void ACLNetSession::BeginDestroy()
 {
     Shutdown();
     Super::BeginDestroy();
+}
+
+// ---- 매치 진행 표시 ----
+
+double ACLNetSession::SecondsUntil(uint32 ServerMs) const
+{
+    return (int64(ServerMs) - int64(ServerNowMs())) / 1000.0;
+}
+
+float ACLNetSession::ZoneRadiusNow() const
+{
+    // 서버와 같은 계산: 단계 시작~끝 동안 From → To로 일정하게 줄어든다
+    if (!Match.bValid) return 0.f;
+    const int64 Length = int64(Match.PhaseEndMs) - int64(Match.PhaseStartMs);
+    if (Length <= 0 || Match.RadiusFrom == Match.RadiusTo) return Match.RadiusTo;
+    const double T = FMath::Clamp((int64(ServerNowMs()) - int64(Match.PhaseStartMs)) / double(Length), 0.0, 1.0);
+    return float(Match.RadiusFrom + (Match.RadiusTo - Match.RadiusFrom) * T);
+}
+
+bool ACLNetSession::IsOutsideZone(const FVector& Position) const
+{
+    return InMatch() && FVector2D::Distance(FVector2D(Position.X, Position.Y), Match.Center) > ZoneRadiusNow();
+}
+
+void ACLNetSession::DrawZone() const
+{
+    if (!InMatch()) return;
+    const float Radius = ZoneRadiusNow();
+    const FVector Center(Match.Center.X, Match.Center.Y, 15);
+    // 지금 자기장(파랑)과 축소가 끝날 자리(흰색)
+    DrawDebugCircle(GetWorld(), Center, FMath::Max(Radius, 20.f), 128, FColor(60, 140, 255), false, -1, 0, 10, FVector(1, 0, 0), FVector(0, 1, 0), false);
+    if (Match.RadiusTo < Radius - 1)
+        DrawDebugCircle(GetWorld(), Center, FMath::Max(Match.RadiusTo, 20.f), 96, FColor(230, 230, 230), false, -1, 0, 3, FVector(1, 0, 0), FVector(0, 1, 0), false);
+}
+
+FString ACLNetSession::MatchText() const
+{
+    if (!InMatch()) return FString();
+    const double Left = Match.PhaseEndMs ? FMath::Max(0.0, SecondsUntil(Match.PhaseEndMs)) : 0.0;
+    const int32 L = FMath::CeilToInt(Left);
+    const FString Time = FString::Printf(TEXT("%d:%02d"), L / 60, L % 60);
+    FString Phase;
+    switch (Proto::MatchPhase(Match.Phase))
+    {
+    case Proto::MatchPhase::Waiting: Phase = TEXT("다른 팀을 기다리는 중"); break;
+    case Proto::MatchPhase::Countdown: Phase = FString::Printf(TEXT("시작까지 %s"), *Time); break;
+    case Proto::MatchPhase::Round:
+        Phase = Match.Round == 4 ? FString::Printf(TEXT("4라운드 · 자기장 계속 축소 %s"), *Time) : FString::Printf(TEXT("%d라운드 · 남은 시간 %s"), Match.Round, *Time);
+        break;
+    case Proto::MatchPhase::Shrink: Phase = FString::Printf(TEXT("%d라운드 끝 · 자기장 축소 중 %s"), Match.Round, *Time); break;
+    case Proto::MatchPhase::Ended: Phase = Match.Winner ? FString::Printf(TEXT("팀 %d 승리"), Match.Winner) : FString(TEXT("무승부")); break;
+    }
+    return FString::Printf(TEXT("매치 · %s · 자기장 %.0fm · 밖 피해 초당 %.0f%% · 남은 팀 %d · 내 팀 %d%s"), *Phase, ZoneRadiusNow() / 100.f, Match.DamagePercent,
+                           Match.TeamsAlive, MyTeam, Match.bRespawnAllowed ? TEXT("") : TEXT(" · 부활 없음"));
+}
+
+FString ACLNetSession::MatchBanner() const
+{
+    if (!InMatch()) return FString();
+    if (Match.Phase == uint8(Proto::MatchPhase::Ended))
+        return Match.Winner == 0 ? FString(TEXT("무승부 (동시 전멸)")) : Match.Winner == MyTeam ? FString(TEXT("승리! 최후의 1팀")) : FString::Printf(TEXT("팀 %d 승리"), Match.Winner);
+    if (bEliminated) return TEXT("탈락 · 남은 팀원을 지켜보세요");
+    if (MyRespawnAtMs) return FString::Printf(TEXT("부활까지 %.0f초"), FMath::Max(0.0, FMath::CeilToDouble(SecondsUntil(MyRespawnAtMs))));
+    if (Match.Phase == uint8(Proto::MatchPhase::Countdown)) return FString::Printf(TEXT("%.0f"), FMath::Max(1.0, FMath::CeilToDouble(SecondsUntil(Match.PhaseEndMs))));
+    if (const ACLHero* Hero = LocalHero(); Hero && Hero->HP > 0 && IsOutsideZone(Hero->GetActorLocation()) && Match.DamagePercent > 0)
+        return TEXT("자기장 밖! 안으로 들어가세요");
+    return FString();
 }

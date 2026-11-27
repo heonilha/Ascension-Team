@@ -71,6 +71,8 @@ public:
     void ReceiveHit(float Damage);
     // 온라인: 서버가 확정한 판정을 반영한다. 회피 무적은 서버가 이미 판정했으므로 여기서 다시 보지 않는다.
     void ApplyServerHit(bool bDodged, float Damage, int32 RewindMs);
+    // 온라인 매치: 서버가 부활시켰다(S_Respawn). 위치는 ACLNetSession이 옮긴다.
+    void ReviveOnline(float NewHP);
     // 온라인 PvE: 검기를 쏜 순간 서버에 알린다(판정은 서버). 로컬 검기는 연출과 즉시 타격감만 맡는다.
     // 회피 무적 시간. 온라인에서는 서버가 알려 준 방 모드 규칙(PvE 0.15초, PvP 0.30초)으로 바뀐다.
     double ImmuneDuration = .15;

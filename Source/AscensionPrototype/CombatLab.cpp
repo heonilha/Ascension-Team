@@ -569,8 +569,18 @@ bool ACLHero::TakeItem(ACLDrop* Drop)
     UE_LOG(LogTemp,Display,TEXT("ASCENSION_LOOT item=%s life=%s"),*Item.ID.ToString(),*LifeID.ToString());
     if(Drop->Items.IsEmpty()) Drop->Destroy(); return true;
 }
+void ACLHero::ReviveOnline(float NewHP)
+{
+    HP=NewHP; HurtUntil=0; Locked=nullptr; bResolved=true; bCharging=false; ReleasedCharge=0;
+    AttackEnd=DodgeEnd=ImmuneEnd=DodgeReady=PerfectUntil=0; Weapon=Lab::Item(0,0); Armor=Lab::Item(1,0);
+    GetMesh()->SetVisibility(bHasModel); Body->SetVisibility(!bHasModel); VisualState=-1;
+    Skills->ResetForNewLife(); // 마나·쿨타임 초기화, 무기 표시
+    Notice=TEXT("부활했습니다. 자기장 안에서 다시 싸우세요.");
+}
 void ACLHero::ResetLife()
 {
+    if(ACLNetSession* Net=Lab::OnlineSession(this); Net && Net->InMatch())
+    { Notice=TEXT("매치에서는 쓰러지면 서버가 잠시 뒤 부활시킵니다(4라운드는 탈락)."); return; }
     UGameplayStatics::SetGamePaused(this,false); bLevelChoice=false;
     Level=1; Experience=PowerRank=0; LightningRank=BladeRank=1; LightningReady=BladeReady=0;
     HP=100; Awakenings.Empty(); Offers.Empty(); PendingReplacement=-1; LifeID=FGuid::NewGuid(); Locked=nullptr;
@@ -999,13 +1009,16 @@ void AAscensionMode::BeginPlay()
     {
         // 이름을 안 주면 "컴퓨터이름-프로세스번호": 한 PC에서 클라이언트 여러 개를 띄워도 구분된다
         FString Name=FString::Printf(TEXT("%s-%u"),FPlatformProcess::ComputerName(),FPlatformProcess::GetCurrentProcessId()); FParse::Value(FCommandLine::Get(),TEXT("AscensionName="),Name);
+        // -AscensionMatch=판 번호(같은 번호끼리 한 판), -AscensionTeam=소속 팀 1~4, -AscensionMode=match(기본) | practice(개발 시험용 연습 방)
+        uint32 MatchCode=1; FParse::Value(FCommandLine::Get(),TEXT("AscensionMatch="),MatchCode);
         uint32 Team=1; FParse::Value(FCommandLine::Get(),TEXT("AscensionTeam="),Team);
-        FString RoomMode=TEXT("pve"); FParse::Value(FCommandLine::Get(),TEXT("AscensionMode="),RoomMode); // pve | pvp
-        const bool bPvp=RoomMode.Equals(TEXT("pvp"),ESearchCase::IgnoreCase);
+        FString RoomMode=TEXT("match"); FParse::Value(FCommandLine::Get(),TEXT("AscensionMode="),RoomMode);
+        const bool bMatch=!RoomMode.Equals(TEXT("practice"),ESearchCase::IgnoreCase) && !RoomMode.Equals(TEXT("pve"),ESearchCase::IgnoreCase);
         Net=GetWorld()->SpawnActor<ACLNetSession>();
-        if(Net) Net->Connect(ServerAddress,Name,Team,bPvp);
+        if(Net) Net->Connect(ServerAddress,Name,MatchCode,uint8(FMath::Clamp<uint32>(Team,1,4)),bMatch);
         if(ACLHero* P=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0)))
-            P->Notice=bPvp?TEXT("온라인 PvP 시험: 공격·회피를 서버가 판정합니다."):TEXT("온라인: 같은 팀과 함께 서버가 움직이는 몬스터를 사냥합니다. 검기 명중·피격·회피는 서버가 판정합니다.");
+            P->Notice=bMatch?FString::Printf(TEXT("온라인 매치 · 팀 %u: 몬스터를 사냥하고 다른 팀을 쓰러뜨려 최후의 1팀이 되세요. 자기장이 점점 좁아집니다."),FMath::Clamp<uint32>(Team,1,4))
+                            :FString(TEXT("온라인 연습 방(개발 시험용): 서버가 움직이는 몬스터를 사냥합니다."));
     }
     if(FParse::Param(FCommandLine::Get(),TEXT("AscensionCollisionVerify")))
     {
@@ -1895,6 +1908,20 @@ void ACLHUD::DrawHUD()
     DrawRect(FLinearColor(0,0,0,.75f),12,12,FMath::Min(1000.f,Canvas->SizeX-24.f),190);
     AAscensionMode* Mode=Cast<AAscensionMode>(GetWorld()->GetAuthGameMode());
     if(Mode && IsValid(Mode->Net)) DrawText(Mode->Net->StatusText(),FLinearColor(.55f,.85f,1.f),BarX-12,BarY-58,nullptr,1.f);
+    if(Mode && IsValid(Mode->Net) && Mode->Net->InMatch())
+    {
+        // 매치 진행(위쪽 가운데)과 큰 안내(가운데): 카운트다운·승리·부활 대기·탈락·자기장 밖
+        const FString Line=Mode->Net->MatchText(); float W=0,H=0; GetTextSize(Line,W,H,nullptr,1.1f);
+        DrawRect(FLinearColor(0,0,0,.8f),(Canvas->SizeX-W)*.5f-10,206,W+20,H+10);
+        DrawText(Line,Mode->Net->IsOutsideZone(P->GetActorLocation())?FLinearColor(1,.45f,.35f):FLinearColor(.7f,.85f,1.f),(Canvas->SizeX-W)*.5f,211,nullptr,1.1f);
+        const FString Banner=Mode->Net->MatchBanner();
+        if(!Banner.IsEmpty())
+        {
+            GetTextSize(Banner,W,H,nullptr,2.f);
+            DrawRect(FLinearColor(0,0,0,.7f),(Canvas->SizeX-W)*.5f-16,Canvas->SizeY*.32f-8,W+32,H+16);
+            DrawText(Banner,FLinearColor(1,.85f,.35f),(Canvas->SizeX-W)*.5f,Canvas->SizeY*.32f,nullptr,2.f);
+        }
+    }
     if(Mode && Mode->bSurvival)
     {
         const int32 Seconds=int32(Mode->SurvivalElapsed());

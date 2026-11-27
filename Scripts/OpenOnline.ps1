@@ -1,16 +1,18 @@
-# Online: connect to the Ascension server and play together with players that use the same team code.
+# Online: connect to the Ascension server (Ascension-Server, Rust) and play a battle royale match.
+# Players who use the same -Match number play the same match; -Team (1-4) picks your team (up to 3 per team).
 # The editor's Play button (PIE) always runs the offline demo; online mode needs this launcher (or -AscensionServer=...).
 # Example:
 #   .\Scripts\OpenOnline.ps1 -Name player1 -Team 1      # runs this checkout (build it once: open in the editor, or Build.bat)
-#   .\Scripts\OpenOnline.ps1 -Name player2 -Team 1      # second window on the same PC joins the same room
+#   .\Scripts\OpenOnline.ps1 -Name player2 -Team 2      # second window on the same PC: another team, so the match starts
 #   .\Scripts\OpenOnline.ps1 -BuildRoot D:\Builds\AscensionPrototype -Name player1   # runs a BuildDemo.ps1 copy instead
-#   -Mode pvp joins the PvP stage room (server-judged attacks and dodges, 0.30 s dodge invulnerability).
+#   -Mode practice joins the developer practice room (no teams, no rounds) instead of a match.
 #   -Server 192.168.0.10:7777 connects to another PC's server.
 param(
     [string]$Server = '127.0.0.1:7777',
     [string]$Name = $env:USERNAME,
-    [int]$Team = 1,
-    [ValidateSet('pve', 'pvp')][string]$Mode = 'pve',
+    [ValidateRange(1, 4)][int]$Team = 1,
+    [int]$Match = 1,
+    [ValidateSet('match', 'practice')][string]$Mode = 'match',
     [string]$EngineRoot = 'C:\Program Files\Epic Games\UE_5.8',
     [string]$BuildRoot = ''
 )
@@ -22,6 +24,6 @@ if (-not (Test-Path -LiteralPath "$BuildRoot\Binaries\Win64\UnrealEditor-Ascensi
 }
 $taskArgs = @(
     "`"$BuildRoot\AscensionPrototype.uproject`"", '-game', '-windowed', '-ResX=1280', '-ResY=720', '-nosplash',
-    "-AscensionServer=$Server", "-AscensionName=`"$Name`"", "-AscensionTeam=$Team", "-AscensionMode=$Mode"
+    "-AscensionServer=$Server", "-AscensionName=`"$Name`"", "-AscensionMatch=$Match", "-AscensionTeam=$Team", "-AscensionMode=$Mode"
 )
 Start-Process -FilePath $taskEngine -ArgumentList $taskArgs -WindowStyle Normal

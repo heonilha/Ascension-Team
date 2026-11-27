@@ -50,10 +50,12 @@ void ACLRemoteHero::BeginPlay()
     LastPosition = GetActorLocation();
 }
 
-void ACLRemoteHero::Init(uint32 InPlayerId, const FString& InName)
+void ACLRemoteHero::Init(uint32 InPlayerId, const FString& InName, uint8 InTeam, bool bInAlly)
 {
     PlayerId = InPlayerId;
-    DisplayName = InName;
+    Team = InTeam;
+    bAlly = bInAlly;
+    DisplayName = InTeam ? FString::Printf(TEXT("%s [팀 %d%s]"), *InName, InTeam, bInAlly ? TEXT(" · 아군") : TEXT("")) : InName;
 }
 
 void ACLRemoteHero::PushSample(double ServerTime, const FVector& Position, float Yaw, uint8 State)
@@ -124,5 +126,5 @@ void ACLRemoteHero::UpdateVisual(double RenderTime, float Delta)
         if (State != 4) Lab::AlignBodyForward(GetMesh(), 0.f);
     }
 
-    DrawDebugString(GetWorld(), FVector(0, 0, 125), DisplayName, this, FColor(120, 220, 255), 0, true);
+    DrawDebugString(GetWorld(), FVector(0, 0, 125), DisplayName, this, bAlly ? FColor(120, 255, 150) : FColor(255, 110, 90), 0, true);
 }
