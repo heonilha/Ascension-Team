@@ -131,3 +131,11 @@ BladeWave.png 실제 렌더링에서 이동 중 청록색 검기와 체력/경�
 - 실제 서버(시간 0.05, 경험치 5배, 1팀 시작) + 화면 없는 클라이언트 자동 사냥 60초: 처음에는 검기 0/38 인정·처치 0(위 버그). 서버 수정 뒤 검기 44/44 인정, 처치 7, `ASCENSION_NET_PROGRESS`로 1→6레벨(스킬 포인트 6, 스탯 15) 수신.
 - 클라이언트 빌드 성공, `VerifySkills` PASS, 기존 `-AscensionVerify` PASS wall_trials=20.
 - 미검증: 성장 줄·경험치 바·이름표 레벨의 실제 화면, 플레이어 처치 경험치의 실제 대전(방 단위 시험으로만 확인).
+
+2026-11-28 필드·균열·스킬 창 검증 (프로토콜 v7):
+- 맵: `CreateMap.py` 실행(ASCENSION_OPEN_RUINS_READY playable 10000 × 10000, 액터 460), `ExportServerCollision.py`(장애물 112, 표식 31). 실제 물리와 대조 `-AscensionCollisionVerify` PASS(점 94,728, 불일치 0).
+- 서버 `Scripts/Test.ps1` 30개 ALL PASS(새 맵으로 기준 기록 다시 만듦, 매치 회피 시나리오 14 → 26초). Rust 시험 추가: 캠프 5개, 스킬·스탯 규칙 4개, 표식 1개, 방 단위 4개(풀숲 숨김, 균열 대결 보상·복귀·재입장 불가, 혼자 들어간 균열·안 들어가면 닫힘, 스킬·스탯 명령). cargo fmt·clippy 깨끗.
+- 클라이언트 빌드 성공. `VerifySkills` PASS(29개: 스킬 번호가 서버와 같음, 처음엔 빈 슬롯, 배우기·포인트 부족·해금 조건, 스탯 분배, 배운 순서 = 슬롯, 강화 피해·쿨타임, 전투 중 지우기 불가, 지우면 포인트 반환 등). `-AscensionVerify` PASS wall_trials=20, `-AscensionSurvivalVerify` PASS.
+- 실제 서버 접속: 화면 없는 클라이언트(-AscensionNetAutoHunt -AscensionNetAutoLearn) 75초에 캠프까지 걸어가 사냥, 10레벨, 서버가 배우기·강화·스탯 분배를 모두 받아들임(`ASCENSION_NET_LOADOUT result=0 slots=1,4,7,10 stats=32,5,5,5`). 시간 0.05 서버에서 2라운드 + 2분 시각에 `ASCENSION_NET_RIFT phase=1`(균열 열림) 수신.
+- 실제 화면(1280×720) 확인: 스킬 창(13레벨, 강타 선택), 온라인 HUD(2라운드 매치 줄·균열 열림 줄·미니맵·풀숲·가만히 있는 캠프 몬스터·스킬 바), 사냥 중 HUD(레벨 9·포인트 알림). 창 위에 몬스터 이름표가 겹치던 것과 고른 탭이 꺼진 단추처럼 보이던 것을 고쳤다.
+- 미검증: 사람이 두 클라이언트로 하는 균열 입장·대결·보스전, 풀숲에 숨은 적이 실제 화면에서 사라지는 모습, 스탯의 서버 판정 반영(아직 없음).
