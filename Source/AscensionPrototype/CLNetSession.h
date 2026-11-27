@@ -48,6 +48,17 @@ public:
     bool IsOutsideZone(const FVector& Position) const;
     uint8 MyTeam = 1;
 
+    // ---- 레벨·경험치(S_PlayerProgress). 서버가 정한 값이고 클라이언트는 보여 주기만 한다 ----
+    struct FProgressView
+    {
+        bool bValid = false;
+        uint8 Level = 1, SkillPoints = 1, AwakeningPoints = 0;
+        uint16 StatPoints = 0;
+        uint32 Xp = 0, XpToNext = 20;
+    };
+    FProgressView MyProgress;
+    FString ProgressText() const; // 한 줄 요약(HUD)
+
     // 로컬에서 회피·공격을 시작한 순간 부른다. 판정은 서버 결과(S_HitResult)로 받는다.
     void SendDodge(const FVector& Direction);
     void SendAttack(float Yaw);

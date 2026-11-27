@@ -1980,6 +1980,15 @@ void ACLHUD::DrawHUD()
     FString Owned=TEXT("보유 각성: "); if(P->Awakenings.IsEmpty()) Owned+=TEXT("없음");
     for(int32 I=0;I<P->Awakenings.Num();++I) Owned+=FString::Printf(TEXT("[%d] %s   "),I+1,Lab::Names[P->Awakenings[I]]);
     DrawText(Owned,FLinearColor::White,25,148);
+    if(Mode && IsValid(Mode->Net) && Mode->Net->MyProgress.bValid)
+    {
+        // 온라인: 서버가 정한 레벨·경험치(1인 데모의 성장 대신)
+        DrawText(Mode->Net->ProgressText(),FLinearColor(.7f,.8f,1.f),25,174);
+        const auto& Pr=Mode->Net->MyProgress;
+        DrawRect(FLinearColor(.12f,.15f,.22f),BarX,BarY+25,BarWidth,6);
+        DrawRect(FLinearColor(.35f,.6f,1.f),BarX,BarY+25,BarWidth*(Pr.XpToNext?FMath::Clamp(float(Pr.Xp)/Pr.XpToNext,0.f,1.f):1.f),6);
+    }
+    else
     DrawText(Mode && Mode->bSurvival?FString::Printf(TEXT("Lv %d · 경험치 %d/%d · 번개 %d · 칼날 %d · 검 강화 %d · 일반 검기 %d명"),P->Level,P->Experience,P->ExperienceRequired(),P->LightningRank,P->BladeRank,P->PowerRank,P->NormalWaveTargets()):TEXT("개발 중: 탑 등반 · 파티 · 멀티플레이"),FLinearColor(.7f,.8f,1.f),25,174);
     if(Mode && Mode->bVictory) DrawText(TEXT("휴식 구역 도착! 등반 완료 · R: 새 도전"),FLinearColor::Green,Canvas->SizeX*.5f-245,Canvas->SizeY*.5f,nullptr,1.3f);
     if(Mode && Mode->bEncounterCleared) DrawText(TEXT("전투 완료 · N: 다음 전투"),FLinearColor::Yellow,Canvas->SizeX*.5f-170,Canvas->SizeY-45);

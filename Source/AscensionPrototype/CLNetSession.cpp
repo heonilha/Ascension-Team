@@ -603,6 +603,32 @@ void ACLNetSession::HandlePacket(const TArray<uint8>& Bytes, double ReceivedAt)
         }
         break;
     }
+    case Proto::PacketId::S_PlayerProgress:
+    {
+        Proto::S_PlayerProgress Packet;
+        if (!ReadFixed(Bytes, Packet)) break;
+        if (Packet.playerId == MyId)
+        {
+            MyProgress.bValid = true;
+            MyProgress.Level = Packet.level;
+            MyProgress.Xp = Packet.xp;
+            MyProgress.XpToNext = Packet.xpToNext;
+            MyProgress.SkillPoints = Packet.skillPoints;
+            MyProgress.AwakeningPoints = Packet.awakeningPoints;
+            MyProgress.StatPoints = Packet.statPoints;
+            if (ACLHero* Hero = LocalHero(); Hero && Packet.levelsGained > 0)
+                Hero->Notice = FString::Printf(TEXT("레벨 업! %d레벨 · 스킬 포인트 %d · 스탯 포인트 %d%s"), Packet.level, Packet.skillPoints, Packet.statPoints,
+                                               Packet.awakeningPoints ? *FString::Printf(TEXT(" · 각성 포인트 %d"), Packet.awakeningPoints) : TEXT(""));
+            if (Packet.gainedXp > 0)
+                UE_LOG(LogTemp, Display, TEXT("ASCENSION_NET_PROGRESS level=%d xp=%u/%u gained=%u reason=%d skill=%d stat=%d awaken=%d"), int32(Packet.level), Packet.xp,
+                       Packet.xpToNext, Packet.gainedXp, int32(Packet.reason), int32(Packet.skillPoints), int32(Packet.statPoints), int32(Packet.awakeningPoints));
+        }
+        else if (const TObjectPtr<ACLRemoteHero>* Remote = Remotes.Find(Packet.playerId); Remote && IsValid(*Remote))
+        {
+            (*Remote)->Level = Packet.level;
+        }
+        break;
+    }
     case Proto::PacketId::S_PlayerDied:
     {
         Proto::S_PlayerDied Packet;
@@ -1030,4 +1056,12 @@ FString ACLNetSession::MatchBanner() const
     if (const ACLHero* Hero = LocalHero(); Hero && Hero->HP > 0 && IsOutsideZone(Hero->GetActorLocation()) && Match.DamagePercent > 0)
         return TEXT("자기장 밖! 안으로 들어가세요");
     return FString();
+}
+
+FString ACLNetSession::ProgressText() const
+{
+    if (!MyProgress.bValid) return FString();
+    const FString Xp = MyProgress.XpToNext ? FString::Printf(TEXT("경험치 %u/%u"), MyProgress.Xp, MyProgress.XpToNext) : FString(TEXT("최대 레벨"));
+    return FString::Printf(TEXT("Lv %d · %s · 받은 포인트: 스킬 %d · 스탯 %d%s"), MyProgress.Level, *Xp, MyProgress.SkillPoints, MyProgress.StatPoints,
+                           MyProgress.AwakeningPoints ? *FString::Printf(TEXT(" · 각성 %d"), MyProgress.AwakeningPoints) : TEXT(""));
 }
