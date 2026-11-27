@@ -111,3 +111,5 @@ BladeWave.png 실제 렌더링에서 이동 중 청록색 검기와 체력/경�
 - 1인 데모 회귀: ASCENSION_VERIFY PASS wall_trials=20, ASCENSION_SURVIVAL_VERIFY PASS.
 - Linux(GCC 14.2): 빌드 경고 0, ThreadSanitizer로 몬스터 방 10개(봇 30) + 사냥 + 충전 조작 + PvP 회피 동시 실행 경고 0.
 - 한계: 렌더링 화면에서 사람이 본 몬스터 움직임·예고 표시·타격감은 확인하지 않았다(화면 없는 실행과 로그로만 확인). 성장·경험치·수문장·Q 스킬은 온라인에 아직 없다. 몬스터 위치는 되감지 않는다. 화면 없는 시험은 -ExecCmds="t.MaxFPS 120"으로 프레임을 제한했다.
+
+2026-11-27 기획 전환 문서 정리: 문서만 변경했으며 빌드·게임 시험은 하지 않았다. 삭제한 두 문서를 가리키는 링크가 남아 있지 않은지 검색으로 확인했다. 새 문서의 상대 링크(11.26기획안.md, 데모_작업분담.md)와 문서에 적은 스크립트 경로(Scripts/ExportServerCollision.py, feature/p1-server-terrain 이후 브랜치에 있음)가 실제로 있는지 확인했다.
