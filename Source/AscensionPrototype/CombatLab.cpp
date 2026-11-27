@@ -1,5 +1,7 @@
 #include "CombatLab.h"
 #include "HeroMotion.h"
+#include "CLNetSession.h"
+#include "CLCollisionVerify.h"
 #include "Camera/CameraComponent.h"
 #include "GameFramework/SpringArmComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
@@ -38,6 +40,12 @@ namespace Lab
         if(!I.ID.IsValid()) return TEXT("없음");
         if(I.Kind==0) return I.Tier==2?TEXT("묵직한 검 (+8 피해)"):I.Tier==1?TEXT("예리한 검 (+4 피해)"):TEXT("기본 검");
         return I.Tier==1?TEXT("철제 방어구 (피해 -3)"):TEXT("기본 방어구");
+    }
+    // 온라인 모드이고 서버 연결 액터가 있으면 그 액터, 아니면 nullptr(1인 데모)
+    ACLNetSession* OnlineSession(const AActor* Actor)
+    {
+        const AAscensionMode* Mode=Actor->GetWorld()?Cast<AAscensionMode>(Actor->GetWorld()->GetAuthGameMode()):nullptr;
+        return Mode && Mode->bOnline && IsValid(Mode->Net)?Mode->Net.Get():nullptr;
     }
     bool SetModel(ACharacter* Character,TArray<TObjectPtr<UAnimSequence>>& Clips,bool Monster=false)
     {
@@ -173,8 +181,8 @@ void ACLHero::SetupPlayerInputComponent(UInputComponent* Input)
     Input->BindAction("Choice3",IE_Pressed,this,&ACLHero::Choice3).bExecuteWhenPaused=true; Input->BindAction("Skip",IE_Pressed,this,&ACLHero::Skip).bExecuteWhenPaused=true;
 }
 bool ACLHero::UsesBladeWave() const { const AAscensionMode* Mode=Cast<AAscensionMode>(GetWorld()->GetAuthGameMode()); return Mode && Mode->bSurvival; }
-void ACLHero::Forward(float V) { MoveForward=V; if(HP>0 && Lab::Now(this)>=DodgeEnd && (UsesBladeWave() || Lab::Now(this)>=AttackEnd)) AddMovementInput(FRotator(0,GetControlRotation().Yaw,0).Vector(),V); }
-void ACLHero::Right(float V) { MoveRight=V; if(HP>0 && Lab::Now(this)>=DodgeEnd && (UsesBladeWave() || Lab::Now(this)>=AttackEnd)) AddMovementInput(FRotationMatrix(FRotator(0,GetControlRotation().Yaw,0)).GetUnitAxis(EAxis::Y),V); }
+void ACLHero::Forward(float V) { MoveForward=V; if(!bNetMovement && HP>0 && Lab::Now(this)>=DodgeEnd && (UsesBladeWave() || Lab::Now(this)>=AttackEnd)) AddMovementInput(FRotator(0,GetControlRotation().Yaw,0).Vector(),V); }
+void ACLHero::Right(float V) { MoveRight=V; if(!bNetMovement && HP>0 && Lab::Now(this)>=DodgeEnd && (UsesBladeWave() || Lab::Now(this)>=AttackEnd)) AddMovementInput(FRotationMatrix(FRotator(0,GetControlRotation().Yaw,0)).GetUnitAxis(EAxis::Y),V); }
 void ACLHero::LookX(float V) { if(!IsValid(Locked)) AddControllerYawInput(V); }
 void ACLHero::LookY(float V) { AddControllerPitchInput(V); }
 void ACLHero::Tick(float Delta)
@@ -187,7 +195,7 @@ void ACLHero::Tick(float Delta)
     Camera->SetRelativeLocation(FVector(0,FMath::Sin(T*135)*Impact,FMath::Sin(T*175)*Impact*.55f));
     // Show the sword motion while the capsule keeps moving. Charging holds
     // the wind-up pose; release plays the remainder of the heavy slash.
-    const int32 State=T<DodgeEnd?4:bCharging?3:T<AttackEnd?(bHeavy?3:2):GetVelocity().SizeSquared2D()>100?1:0;
+    const int32 State=T<DodgeEnd?4:bCharging?3:T<AttackEnd?(bHeavy?3:2):MoveVelocity().SizeSquared2D()>100?1:0;
     if(UsesBladeWave() && bHasModel)
     {
         if(State==4 && VisualState!=4) GetMesh()->SetRelativeRotation(FRotator(0,270,0));
@@ -196,7 +204,7 @@ void ACLHero::Tick(float Delta)
         if(Motion && Clips.Num()==5)
         {
             Motion->IdleClip=Clips[0]; Motion->RunClip=Clips[1];
-            Motion->BaseTime+=Delta; Motion->MovingWeight=FMath::Clamp(GetVelocity().Size2D()/220.f,0.f,1.f);
+            Motion->BaseTime+=Delta; Motion->MovingWeight=FMath::Clamp(MoveVelocity().Size2D()/220.f,0.f,1.f);
             Motion->ActionWeight=State>=2?1.f:0.f;
             if(State>=2 && Clips[State])
             {
@@ -251,7 +259,7 @@ void ACLHero::Tick(float Delta)
         SetActorRotation(FMath::RInterpTo(GetActorRotation(),Facing,Delta,18.f));
     }
     if(T<AttackEnd && !UsesBladeWave()) { ConsumeMovementInputVector(); GetCharacterMovement()->StopMovementImmediately(); }
-    if(T<DodgeEnd)
+    if(T<DodgeEnd && !bNetMovement) // 온라인 회피 이동은 공유 이동 코드가 같은 곡선으로 계산한다
     {
         // Integrate a smooth 300cm roll over 0.65s, independent of frame rate.
         const float Progress=FMath::Clamp(float((T-DodgeStart)/(DodgeEnd-DodgeStart)),0.f,1.f);
@@ -296,6 +304,7 @@ void ACLHero::StartAttack(bool HeavyAttack)
     bEmpowered=T<PerfectUntil; PerfectUntil=0;
     AttackStart=T; HitTime=T+(bHeavy?.46:.28);
     AttackEnd=T+(bHeavy?.95:.68)+(bHeavy && HasAwakening(4)?.45:0); bResolved=false;
+    if(ACLNetSession* Net=Lab::OnlineSession(this)) Net->SendAttack(float(GetControlRotation().Yaw)); // PvP 방에서만 서버가 판정한다
     if(!UsesBladeWave()) { ConsumeMovementInputVector(); GetCharacterMovement()->StopMovementImmediately(); }
     VisualState=-1;
     SwingDirection=FRotator(0,GetControlRotation().Yaw,0).Vector(); SetActorRotation(SwingDirection.Rotation());
@@ -309,6 +318,7 @@ void ACLHero::ResolveSwing()
     if(UsesBladeWave())
     {
         if(bHeavy) Damage*=1.f+ReleasedCharge*2.f;
+        if(ACLNetSession* Net=Lab::OnlineSession(this)) Net->SendWave(float(SwingDirection.Rotation().Yaw),bHeavy,ReleasedCharge); // 몬스터 피해는 서버가 판정
         FActorSpawnParameters Params; Params.Owner=this;
         if(ACLBladeWave* Wave=GetWorld()->SpawnActor<ACLBladeWave>(GetActorLocation()+SwingDirection*45,SwingDirection.Rotation(),Params))
         { Wave->Hero=this; Wave->Direction=SwingDirection; Wave->Damage=Damage; Wave->Radius=bHeavy?70+ReleasedCharge*160:55; Wave->Pierces=bHeavy?4+FMath::RoundToInt(ReleasedCharge*6):NormalWaveTargets(); Wave->Charge=bHeavy?ReleasedCharge:0; Wave->SetLifeSpan(bHeavy?1.2f+ReleasedCharge*.8f:1.2f); }
@@ -349,6 +359,7 @@ void ACLHero::TickAuxiliaryCombat()
 {
     const AAscensionMode* Mode=Cast<AAscensionMode>(GetWorld()->GetAuthGameMode());
     if(!Mode || !Mode->bSurvival || HP<=0 || Mode->bVictory || bLevelChoice) return;
+    if(Mode->bOnline) return; // 자동 번개·회전 칼날은 아직 서버 판정이 없어 온라인에서는 끈다
     const double T=Lab::Now(this);
     for(int32 I=0;I<2;++I)
     {
@@ -384,8 +395,9 @@ void ACLHero::Dodge()
     DashDirection=(CameraAxes.GetUnitAxis(EAxis::X)*MoveForward+CameraAxes.GetUnitAxis(EAxis::Y)*MoveRight).GetSafeNormal2D();
     if(DashDirection.IsNearlyZero()) DashDirection=FRotator(0,GetControlRotation().Yaw,0).Vector();
     ConsumeMovementInputVector(); GetCharacterMovement()->StopMovementImmediately();
-    DodgeStart=T; DodgeProgress=0; DodgeEnd=T+.65; ImmuneEnd=T+.15; DodgeReady=T+1.0;
+    DodgeStart=T; DodgeProgress=0; DodgeEnd=T+.65; ImmuneEnd=T+ImmuneDuration; DodgeReady=T+1.0;
     SetActorRotation(DashDirection.Rotation()); VisualState=-1;
+    if(ACLNetSession* Net=Lab::OnlineSession(this)) Net->SendDodge(DashDirection); // 서버가 누른 시각으로 무적 판정
     if(HasAwakening(3))
     {
         FVector P=GetActorLocation(); DrawDebugSphere(GetWorld(),P,260,24,FColor::Orange,false,1,0,3);
@@ -404,6 +416,28 @@ void ACLHero::Skill()
     SkillReady=T+(HasAwakening(5)?4:6); float Range=HasAwakening(2)?440:320;
     DrawDebugSphere(GetWorld(),GetActorLocation(),Range,32,FColor::Cyan,false,.35,0,3);
     for(TActorIterator<ACLEnemy> It(GetWorld());It;++It) if(It->HP>0 && FVector::DistSquared(GetActorLocation(),It->GetActorLocation())<=FMath::Square(Range) && Lab::Clear(this,*It)) It->ReceiveHit(25);
+}
+FVector ACLHero::NetMoveInput() const
+{
+    // Forward()/Right()의 AddMovementInput과 같은 조건·방향
+    const double T=Lab::Now(this);
+    if(HP<=0 || T<DodgeEnd || (!UsesBladeWave() && T<AttackEnd)) return FVector::ZeroVector;
+    const FRotationMatrix Axes(FRotator(0,GetControlRotation().Yaw,0));
+    return (Axes.GetUnitAxis(EAxis::X)*MoveForward+Axes.GetUnitAxis(EAxis::Y)*MoveRight).GetClampedToMaxSize2D(1.0);
+}
+void ACLHero::ApplyServerHit(bool bDodged,float Damage,int32 RewindMs)
+{
+    if(HP<=0) return;
+    if(bDodged)
+    {
+        PerfectUntil=Lab::Now(this)+2;
+        Notice=FString::Printf(TEXT("정확한 회피! (서버 판정 · 입력 %dms 되감음) 2초 안에 공격하면 반격 피해가 증가합니다."),RewindMs);
+        return;
+    }
+    // 로컬 무적 판정을 건너뛰고 서버가 정한 피해를 그대로 받는다. ReceiveHit이 방어구 감소를 빼므로 미리 더한다.
+    const double SavedImmune=ImmuneEnd; ImmuneEnd=0;
+    ReceiveHit(Damage+ArmorReduction());
+    ImmuneEnd=SavedImmune;
 }
 void ACLHero::ReceiveHit(float Damage)
 {
@@ -524,6 +558,7 @@ void ACLHero::ResetLife()
     if(Controller) Controller->SetControlRotation(FRotator(-30,0,0));
     if(AAscensionMode* Mode=Cast<AAscensionMode>(GetWorld()->GetAuthGameMode())) { Mode->Wave=1; Mode->ResetSurvival(); Mode->SpawnEncounter(); }
     Notice=TEXT("새 전투를 시작합니다. 장비와 각성 없이 다시 도전하세요.");
+    if(ACLNetSession* Net=Lab::OnlineSession(this)) Net->SendRespawn(); // 서버가 시작 위치로 옮기고 체력을 채운다(죽어 있을 때만)
 }
 
 ACLEnemy::ACLEnemy()
@@ -678,8 +713,70 @@ void ACLEnemy::TickBoss(float Delta,ACLHero* P)
     }
     else if(T>=Deadline) Phase=0;
 }
+void ACLEnemy::InitPuppet(int32 EnemyKind)
+{
+    bPuppet=true; Configure(EnemyKind);
+    // 위치는 서버가 정한다: 언리얼 이동·충돌을 끈다(온라인 주인공도 몬스터와 부딪히지 않는다. 서버 이동 계산과 같다).
+    GetCharacterMovement()->DisableMovement(); SetActorEnableCollision(false);
+    NetLastPosition=GetActorLocation();
+}
+void ACLEnemy::PushNetSample(double ServerTime,const FVector& Position,float Yaw,uint8 State,float ServerHP)
+{
+    if(!NetSamples.IsEmpty() && ServerTime<=NetSamples.Last().Time) return;
+    NetSamples.Add({ServerTime,Position,Yaw,State}); if(NetSamples.Num()>32) NetSamples.RemoveAt(0);
+    HP=FMath::Min(ServerHP,MaxHP);
+}
+void ACLEnemy::ShowNetTell(float Yaw,double UntilRealTime,bool bSecondStrike)
+{
+    NetTellYaw=Yaw; NetTellUntil=UntilRealTime; StrikeNumber=bSecondStrike?1:0; VisualState=-1;
+}
+void ACLEnemy::ShowNetHit(float Damage,float NewHP)
+{
+    LastDamage=Damage; DamageTextUntil=Lab::Now(this)+.65; DamageTextOrigin=GetActorLocation(); HP=FMath::Min(NewHP,MaxHP);
+    if(HP<=0) DrawDebugString(GetWorld(),DamageTextOrigin+FVector(0,0,140),FString::Printf(TEXT("-%.0f"),Damage),nullptr,FColor(255,220,100),.65f,true,1.3f);
+}
+void ACLEnemy::UpdatePuppet(double RenderTime,float Delta)
+{
+    if(NetSamples.IsEmpty()) return;
+    // 서버 표본 두 개 사이를 보간한다(다른 플레이어 표시와 같은 방식).
+    while(NetSamples.Num()>=2 && NetSamples[1].Time<=RenderTime) NetSamples.RemoveAt(0);
+    const FNetSample& A=NetSamples[0]; FVector Position=A.Position; float Yaw=A.Yaw; uint8 State=A.State;
+    if(NetSamples.Num()>=2 && RenderTime>A.Time)
+    {
+        const FNetSample& B=NetSamples[1]; const float Alpha=FMath::Clamp(float((RenderTime-A.Time)/(B.Time-A.Time)),0.f,1.f);
+        Position=FMath::Lerp(A.Position,B.Position,Alpha); Yaw=A.Yaw+FMath::FindDeltaAngleDegrees(A.Yaw,B.Yaw)*Alpha; if(Alpha>.5f) State=B.State;
+    }
+    // 서버 상태(MonsterState): 2 예고, 3 돌진, 4 빈틈. 예고는 서버가 알린 명중 시각까지 보간 지연 없이 보여 준다.
+    const bool bTelling=FPlatformTime::Seconds()<NetTellUntil;
+    if(bTelling) Yaw=NetTellYaw;
+    Phase=bTelling || State==2?1:State==3?2:State==4?3:0;
+    Direction=FRotator(0,Yaw,0).Vector();
+    SetActorLocationAndRotation(Position,FRotator(0,Yaw,0));
+    NetSpeed=FMath::FInterpTo(NetSpeed,float((Position-NetLastPosition).Size2D())/FMath::Max(Delta,1.e-3f),Delta,10.f); NetLastPosition=Position;
+
+    // 아래는 1인 데모 Tick의 표시 부분과 같다.
+    const double T=Lab::Now(this);
+    Lab::Visual(this,Clips,Phase==1 && Kind!=1?2:Phase==2 || NetSpeed>40?1:0,VisualState,Phase==1 && Kind!=1?(StrikeNumber==1?.6f:.75f):0);
+    Lab::AlignBodyForward(GetMesh());
+    if(T<DamageTextUntil) DrawDebugString(GetWorld(),DamageTextOrigin+FVector(0,0,130+(1-(DamageTextUntil-T)/.65)*65),FString::Printf(TEXT("-%.0f"),LastDamage),nullptr,FColor(255,220,100),0,true,1.3f);
+    const FColor C=Kind==2?FColor::Purple:Kind==1?FColor::Orange:FColor::Red;
+    const ACLHero* P=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0));
+    if(Kind==2 || HP<MaxHP || (P && P->Locked==this))
+        DrawDebugString(GetWorld(),GetActorLocation()+FVector(0,0,Kind==2?150:110),FString::Printf(TEXT("%s %.0f/%.0f"),Kind==2?TEXT("망령 지휘관"):Kind==1?TEXT("폭주 망령"):TEXT("망령 검병"),HP,MaxHP),nullptr,C,0,true);
+    if(Phase==1)
+    {
+        if(Kind==1)
+        {
+            FVector Lane=GetActorLocation(); Lane.Z=8; const FVector Side=FVector::CrossProduct(Direction,FVector::UpVector)*70;
+            DrawDebugLine(GetWorld(),Lane+Side,Lane+Direction*600+Side,C,false,-1,0,4);
+            DrawDebugLine(GetWorld(),Lane-Side,Lane+Direction*600-Side,C,false,-1,0,4);
+        }
+        else Lab::Arc(GetWorld(),GetActorLocation(),Direction,180,55,C);
+    }
+}
 void ACLEnemy::Tick(float Delta)
 {
+    if(bPuppet) { Super::Tick(Delta); return; } // 꼭두각시는 ACLNetSession이 UpdatePuppet으로 움직인다
     Super::Tick(Delta); ACLHero* P=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0)); if(HP<=0 || !P || P->HP<=0) { GetCharacterMovement()->StopMovementImmediately(); return; }
     const double T=Lab::Now(this); FVector To=P->GetActorLocation()-GetActorLocation();
     if(!bBoss) Lab::Visual(this,Clips,Phase==1 && Kind!=1?2:Phase==2?1:GetVelocity().SizeSquared2D()>100?1:0,VisualState,Phase==1 && Kind!=1?(StrikeNumber==1?.6f:.75f):0);
@@ -740,6 +837,7 @@ void ACLEnemy::Tick(float Delta)
 }
 void ACLEnemy::ReceiveHit(float Damage,FVector PushDirection)
 {
+    if(bPuppet) return; // 온라인: 피해·넉백·사망은 서버가 정해 S_MonsterHit으로 알려 준다
     if(HP<=0) return; HP=FMath::Max(0.f,HP-Damage);
     LastDamage=Damage; DamageTextUntil=Lab::Now(this)+.65; DamageTextOrigin=GetActorLocation();
     if(HP>0 && !bBoss)
@@ -865,8 +963,28 @@ void AAscensionMode::BeginPlay()
     if(FParse::Param(FCommandLine::Get(),TEXT("AscensionHordeView")) || FParse::Param(FCommandLine::Get(),TEXT("AscensionFloorView"))) bView=bSurvival=true;
     if(FParse::Param(FCommandLine::Get(),TEXT("AscensionBossVerify"))) bSurvival=true;
     if(FParse::Param(FCommandLine::Get(),TEXT("AscensionBossView"))) bView=bSurvival=true;
+    FString ServerAddress;
+    bOnline=!bVerify && !bView && !bSpawnVerify && FParse::Value(FCommandLine::Get(),TEXT("AscensionServer="),ServerAddress);
     ResetSurvival(); SpawnEncounter(); NextCheck=Lab::Now(this)+1;
     if(bSurvival) if(ACLHero* P=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0))) P->Notice=TEXT("사냥하며 강화 → 중앙 제단 E로 수문장 소환 → 처치 후 중앙 E로 다음 층");
+    if(bOnline)
+    {
+        // 이름을 안 주면 "컴퓨터이름-프로세스번호": 한 PC에서 클라이언트 여러 개를 띄워도 구분된다
+        FString Name=FString::Printf(TEXT("%s-%u"),FPlatformProcess::ComputerName(),FPlatformProcess::GetCurrentProcessId()); FParse::Value(FCommandLine::Get(),TEXT("AscensionName="),Name);
+        uint32 Team=1; FParse::Value(FCommandLine::Get(),TEXT("AscensionTeam="),Team);
+        FString RoomMode=TEXT("pve"); FParse::Value(FCommandLine::Get(),TEXT("AscensionMode="),RoomMode); // pve | pvp
+        const bool bPvp=RoomMode.Equals(TEXT("pvp"),ESearchCase::IgnoreCase);
+        Net=GetWorld()->SpawnActor<ACLNetSession>();
+        if(Net) Net->Connect(ServerAddress,Name,Team,bPvp);
+        if(ACLHero* P=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0)))
+            P->Notice=bPvp?TEXT("온라인 PvP 시험: 공격·회피를 서버가 판정합니다."):TEXT("온라인: 같은 팀과 함께 서버가 움직이는 몬스터를 사냥합니다. 검기 명중·피격·회피는 서버가 판정합니다.");
+    }
+    if(FParse::Param(FCommandLine::Get(),TEXT("AscensionCollisionVerify")))
+    {
+        // 서버 충돌 지형 파일과 실제 충돌 비교. 물리 장면이 준비된 뒤 한 번 실행하고 종료한다.
+        FTimerHandle Handle;
+        GetWorldTimerManager().SetTimer(Handle,FTimerDelegate::CreateWeakLambda(this,[this]{ FPlatformMisc::RequestExitWithStatus(false,AscensionVerifyServerCollision(GetWorld())?0:1); }),.5f,false);
+    }
 }
 void AAscensionMode::Check(bool Condition,const TCHAR* Name)
 {
@@ -876,7 +994,7 @@ void AAscensionMode::Check(bool Condition,const TCHAR* Name)
 void AAscensionMode::Tick(float Delta)
 {
     Super::Tick(Delta);
-    if(bSurvival && !bVerify && !bView) TickSurvival();
+    if(bSurvival && !bVerify && !bView && !bOnline) TickSurvival();
     if(bView && FParse::Param(FCommandLine::Get(),TEXT("AscensionFloorView"))) TickSurvival();
     if(!bSurvival && !bVerify && !bView && !bSpawnVerify && !bEncounterCleared && SpawnedEnemies>0 && RemainingEnemies()==0)
     {
@@ -1626,6 +1744,7 @@ void AAscensionMode::ResetSurvival()
 void AAscensionMode::SummonGatekeeper()
 {
     ACLHero* P=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0));
+    if(bOnline) { if(P) P->Notice=TEXT("온라인 P0에는 아직 수문장이 없습니다. 몬스터·보스는 서버 이전 후 추가됩니다."); return; }
     if(!P || P->HP<=0 || !bSurvival || bRestArea || bBossDefeated || FVector::Dist2D(P->GetActorLocation(),FVector::ZeroVector)>=300) return;
     if(bBossSpawned) { P->Notice=TEXT("수문장과 전투 중입니다. 처치해야 중앙 출구가 열립니다."); return; }
     SpawnSurvivalBatch(1,false,true);
@@ -1677,6 +1796,7 @@ void AAscensionMode::TickSurvival()
 }
 void AAscensionMode::SpawnSurvivalBatch(int32 Count,bool Elite,bool Boss)
 {
+    if(bOnline) return;
     ACLHero* P=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0)); if(!P || P->HP<=0 || bRestArea || (Boss && bBossSpawned)) return;
     if(Boss) Count=FMath::Min(Count,1);
     for(int32 I=0;I<Count;++I)
@@ -1703,6 +1823,7 @@ void AAscensionMode::SpawnSurvivalBatch(int32 Count,bool Elite,bool Boss)
 }
 void AAscensionMode::SpawnEncounter(int32 Seed)
 {
+    if(bOnline) return; // 온라인 P0: 몬스터는 서버가 관리하기 전까지 만들지 않는다
     TArray<ACLEnemy*> Existing; for(TActorIterator<ACLEnemy> It(GetWorld());It;++It) Existing.Add(*It);
     for(ACLEnemy* Enemy:Existing) { Enemy->SetActorEnableCollision(false); Enemy->Destroy(); }
     bEncounterCleared=false; SpawnedEnemies=0;
@@ -1745,6 +1866,7 @@ void ACLHUD::DrawHUD()
     DrawRect(Lab::Now(P)<P->HurtUntil?FLinearColor::White:Health<=.3f?FLinearColor(.9f,.12f,.1f):FLinearColor(.12f,.8f,.65f),BarX,BarY,BarWidth*Health,16);
     DrawRect(FLinearColor(0,0,0,.75f),12,12,FMath::Min(1000.f,Canvas->SizeX-24.f),190);
     AAscensionMode* Mode=Cast<AAscensionMode>(GetWorld()->GetAuthGameMode());
+    if(Mode && IsValid(Mode->Net)) DrawText(Mode->Net->StatusText(),FLinearColor(.55f,.85f,1.f),BarX-12,BarY-58,nullptr,1.f);
     if(Mode && Mode->bSurvival)
     {
         const int32 Seconds=int32(Mode->SurvivalElapsed());

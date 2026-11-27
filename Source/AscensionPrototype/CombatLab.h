@@ -11,6 +11,7 @@ class UStaticMeshComponent;
 class ACLEnemy;
 class ACLHero;
 class UAnimSequence;
+class ACLNetSession;
 
 USTRUCT()
 struct FCLItem
@@ -66,10 +67,22 @@ public:
     virtual void Tick(float Delta) override;
     virtual void SetupPlayerInputComponent(UInputComponent* Input) override;
     void ReceiveHit(float Damage);
+    // 온라인: 서버가 확정한 판정을 반영한다. 회피 무적은 서버가 이미 판정했으므로 여기서 다시 보지 않는다.
+    void ApplyServerHit(bool bDodged, float Damage, int32 RewindMs);
+    // 온라인 PvE: 검기를 쏜 순간 서버에 알린다(판정은 서버). 로컬 검기는 연출과 즉시 타격감만 맡는다.
+    // 회피 무적 시간. 온라인에서는 서버가 알려 준 방 모드 규칙(PvE 0.15초, PvP 0.30초)으로 바뀐다.
+    double ImmuneDuration = .15;
+    // 온라인 이동(서버 권한): 위치는 ACLNetSession의 공유 이동 코드가 정하고, 언리얼 이동은 쓰지 않는다.
+    bool bNetMovement = false;
+    FVector NetVelocity = FVector::ZeroVector;
+    // 이번 틱의 이동 입력(카메라 기준 → 월드 방향, 길이 1 이하). 공격·회피로 이동이 막히면 0.
+    FVector NetMoveInput() const;
+    FVector MoveVelocity() const { return bNetMovement ? NetVelocity : GetVelocity(); }
     void OfferAwakening();
     void ResetLife();
     void Attack(); void Heavy(); void ReleaseHeavy(); void Dodge(); void Skill(); void ToggleLock();
     bool IsCharging() const { return bCharging; }
+    int32 GetVisualState() const { return VisualState; } // 네트워크로 보내는 애니메이션 상태
     float ChargeProgress() const;
     static constexpr double MinimumChargeSeconds = .6;
     static constexpr double MaximumChargeSeconds = 3.0;
@@ -146,6 +159,19 @@ public:
     virtual void Tick(float Delta) override;
     void Configure(int32 EnemyKind);
     void ReceiveHit(float Damage, FVector PushDirection = FVector::ZeroVector);
+
+    // ---- 온라인: 서버가 움직이는 꼭두각시 ----
+    // AI·이동·피해 계산을 하지 않고, 서버가 보낸 위치·상태를 0.1초 늦게 보간해서 보여 준다.
+    // 모델·체력 표시·공격 예고 그리기는 1인 데모와 같은 코드를 쓴다.
+    bool bPuppet = false;
+    void InitPuppet(int32 EnemyKind);
+    void PushNetSample(double ServerTime, const FVector& Position, float Yaw, uint8 State, float ServerHP);
+    void UpdatePuppet(double RenderTime, float Delta);
+    // 서버가 알린 공격 예고: UntilRealTime(로컬 실제 시각)에 명중한다. 보간 지연 없이 바로 예고 자세를 잡는다.
+    void ShowNetTell(float Yaw, double UntilRealTime, bool bSecondStrike);
+    void CancelNetTell() { NetTellUntil = 0; }
+    void ShowNetHit(float Damage, float NewHP);
+
     int32 Kind = 0, Phase = 0;
     float HP = 50, MaxHP = 50;
     double Deadline = 0;
@@ -178,6 +204,19 @@ private:
     FVector DamageTextOrigin;
     FVector KnockbackDirection = FVector::ZeroVector;
     float KnockbackRemaining = 0;
+
+    struct FNetSample
+    {
+        double Time;
+        FVector Position;
+        float Yaw;
+        uint8 State;
+    };
+    TArray<FNetSample> NetSamples;
+    double NetTellUntil = 0;
+    float NetTellYaw = 0;
+    FVector NetLastPosition = FVector::ZeroVector;
+    float NetSpeed = 0;
 };
 
 UCLASS()
@@ -195,6 +234,9 @@ public:
     bool bSurvival = false, bBossSpawned = false, bBossDefeated = false, bVictory = false;
     int32 CurrentFloor = 1;
     bool bRestArea = false;
+    // 온라인 P0(-AscensionServer=IP:포트): 서버와 이동만 동기화하고 몬스터는 만들지 않는다.
+    bool bOnline = false;
+    UPROPERTY() TObjectPtr<ACLNetSession> Net;
     void SummonGatekeeper();
     void AdvanceFloor();
     double SurvivalStart = 0, ReinforcementReady = 0, EliteReady = 0;
