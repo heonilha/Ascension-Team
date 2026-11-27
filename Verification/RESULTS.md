@@ -119,3 +119,9 @@ BladeWave.png 실제 렌더링에서 이동 중 청록색 검기와 체력/경�
 - 스킬 공통 틀 추가 후 빌드 성공. `Scripts/VerifySkills.ps1`(-AscensionSkillVerify, nullrhi) 19항목 PASS: 검 12·활 12 등록, 구현된 스킬 우선 기본 슬롯, 강타 피해 63(공식 일치)·경직 0.5초·마나 10 소모, 동작 중 재시전 차단, 쿨타임 4초 차단, 미구현 스킬 무효, 활 스킬 사용 시 활로 자동 교체, 속사 투사체 1회 명중 47.25 후 소멸, F 교체, 새 생명 초기화, 마나 부족 차단. ASCENSION_SKILL_VERIFY PASS.
 - 기존 회귀: -AscensionVerify(ASCENSION_VERIFY PASS wall_trials=20), -AscensionCombatVerify(PASS), -AscensionSurvivalVerify(PASS), -AscensionBossVerify(PASS). 처음 생존 시험은 -AscensionVerify 없이 실행해 끝나지 않았고, 올바른 옵션으로 다시 실행해 통과했다.
 - 미검증: 실제 키 입력(Z/X/C/V/F)과 스킬 바 HUD의 화면 표시는 렌더링·직접 플레이로 확인하지 않았다. 준비 시간이 있는 스킬의 회피 취소는 구현된 스킬이 없어 시험하지 않았다. 온라인 접속 상태의 스킬 동작은 시험하지 않았다.
+
+2026-11-27 배틀로얄 매치 검증:
+- 서버(Ascension-Server `feature/br-match`, Windows MSVC 19.51 + Rust 1.99.1): `Scripts/Test.ps1` 30개 ALL PASS(C++ 단위 2, 기준 기록 2 — 버전 줄만 바뀜, `cargo test` 전체, 봇 시나리오 25: 이동 7, 연습 방 회피 7, 매치 회피 6, 몬스터 5). 매치 회피 시나리오는 두 봇이 서로 다른 팀으로 들어가 실행된다. 새 Rust 시험: 매치 시간표 4개(36분 합계, 단계·반지름·피해율·부활 대기, 배율, 승자), 방 단위 6개(2팀 모이면 카운트다운→기지에서 시작, 팀 이탈 시 대기, 아군 공격 차단, 1~3라운드 부활이 자기장 안·장애물 밖, 4라운드 탈락→승리→초기화, 자기장 밖 피해 1%·동시 전멸 무승부), 소켓 매치 입장 1개(팀 번호 거부·팀 정원·매치 상태 수신·카운트다운). clippy 경고 0.
+- 실제 서버(시간 배율 0.01) + 봇 2개: 카운트다운 → 시작 → 4라운드 자기장 탈락 → 무승부 → 초기화 → 다음 판 확인.
+- 클라이언트(`feature/match-client`): 빌드 성공(BuildDemo, UE 5.8.3). 화면 없는 클라이언트(-nullrhi, 팀 1) + 봇 2개(팀 1·2)로 실제 서버에 접속: v5 로그인·입장(others=2), `ASCENSION_NET_MATCH`로 1~4라운드·축소 단계와 반지름(3700→2400→1500→800→0)·피해율(1/2/4/8%) 수신, 사망(`ASCENSION_NET_DIED`, 부활 대기·탈락), 팀 1 승리, 서버 부활(`ASCENSION_NET_RESPAWN hp=100`), 초기화 뒤 두 번째 판까지 확인. 처음 시도는 빌드 사본에 `Data/ServerCollision`이 없어 접속 전에 실패했고, `BuildDemo.ps1`이 `Data/`도 복사하도록 고친 뒤 통과했다.
+- 미검증: HUD 매치 줄·가운데 안내·자기장 원·아군/적 이름표 색의 실제 화면, 사람이 직접 조작하는 두 클라이언트 대전.
