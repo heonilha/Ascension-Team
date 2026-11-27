@@ -58,7 +58,7 @@ namespace
 
 bool AscensionVerifyServerCollision(UWorld* World)
 {
-    constexpr double HalfWidth = 2800, HalfDepth = 2400, Grid = 40, EdgeBand = 6;
+    constexpr double HalfWidth = 5000, HalfDepth = 7600, Grid = 40, EdgeBand = 6;
     constexpr double Radius = 32, HalfHeight = 88, CenterZ = 92; // 바닥(z=0)에 선 주인공 캡슐
 
     const FString Path = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir() / TEXT("Data/ServerCollision/CombatLab.txt"));

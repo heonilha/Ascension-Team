@@ -21,7 +21,10 @@ materials = {}
 for name, color in {
     'Ground': (.10, .155, .115), 'Earth': (.075, .105, .085),
     'Stone': (.26, .245, .205), 'DarkStone': (.12, .135, .125),
-    'Path': (.32, .30, .24), 'Moss': (.07, .13, .075), 'Gold': (.55, .30, .065)
+    'Path': (.32, .30, .24), 'Moss': (.07, .13, .075), 'Gold': (.55, .30, .065),
+    'Leaf': (.05, .20, .045), 'LeafDark': (.035, .13, .035), 'Camp': (.16, .11, .07),
+    'Rift': (.20, .06, .30), 'Team1': (.55, .09, .07), 'Team2': (.08, .22, .60),
+    'Team3': (.10, .45, .12), 'Team4': (.62, .50, .08)
 }.items():
     asset_path = '/Game/Environment/M_' + name
     mat = unreal.load_asset(asset_path)
@@ -66,18 +69,94 @@ def prop(name, position, scale, shape='Cube', material='Stone', yaw=0, collision
     return actor
 
 
-# Playable 56 x 48 m; scenery extends beyond the invisible safety boundary.
-prop('HorizonGround', (0, 0, -90), (240, 240, 1), material='Earth', collision=False)
+# Battle royale field (Docs/11.26기획안.md "필드"): playable 100 x 100 m inside invisible limits.
+# The old 56 x 48 m ruin garden stays in the middle; team bases, camps and bushes surround it.
+# North of the field, outside the limits, is the sealed rift arena (reached only by the server teleport).
+# Layout markers named Open_Area_<kind>_<n> (bush, camp_outer, camp_ruin, camp_elite, rift_gate, rift_arena) are
+# exported by ExportServerCollision.py as "area" lines; the server reads camps, bushes and rift places from them.
+FIELD = 5000
+ARENA_CENTER, ARENA_RADIUS = (0, 6500), 1000
+prop('HorizonGround', (0, 0, -90), (300, 300, 1), material='Earth', collision=False)
 prop('SkyDome', (0, 0, 0), (1600,1600,1600), shape='Sphere', material='Sky', collision=False)
-prop('Ground', (0, 0, -25), (64, 56, .5), material='Ground')
+prop('Ground', (0, 0, -25), (104, 104, .5), material='Ground')
 prop('CentralGate', (0,0,2), (4.6,4.6,.04), shape='Cylinder', material='DarkStone', collision=False)
 for name, position, scale in [
-    ('NorthLimit', (0, 2420, 100), (56.8, .4, 2)),
-    ('SouthLimit', (0, -2420, 100), (56.8, .4, 2)),
-    ('EastLimit', (2820, 0, 100), (.4, 48, 2)),
-    ('WestLimit', (-2820, 0, 100), (.4, 48, 2))
+    ('NorthLimit', (0, FIELD+20, 100), (100.8, .4, 2)),
+    ('SouthLimit', (0, -FIELD-20, 100), (100.8, .4, 2)),
+    ('EastLimit', (FIELD+20, 0, 100), (.4, 100, 2)),
+    ('WestLimit', (-FIELD-20, 0, 100), (.4, 100, 2))
 ]:
     prop(name, position, scale, hidden=True)
+
+
+def area(kind, index, x, y, radius, material, hidden=False):
+    """Flat, walk-through marker disc the exporter turns into an "area" line."""
+    return prop('Area_%s_%d' % (kind, index), (x, y, 1.5), (radius/50, radius/50, .02), shape='Cylinder',
+                material=material, collision=False, hidden=hidden)
+
+
+# Team bases on the diagonals (server room_layout.rs TEAM_BASE_RADIUS = 4000): a coloured disc and two banners.
+for team in range(4):
+    angle = math.radians(45 + 90*team)
+    x, y = math.cos(angle)*4000, math.sin(angle)*4000
+    prop('Base_%d' % (team+1), (x, y, 1.2), (7, 7, .02), shape='Cylinder', material='Team%d' % (team+1), collision=False)
+    for side in (-1, 1):
+        bx, by = x + side*420*-math.sin(angle), y + side*420*math.cos(angle)
+        prop('BaseBanner_%d_%d' % (team+1, side+1), (bx, by, 160), (.35, .35, 3.2), shape='Cylinder', material='DarkStone')
+        prop('BaseFlag_%d_%d' % (team+1, side+1), (bx, by, 300), (.08, .9, .6), material='Team%d' % (team+1),
+             yaw=math.degrees(angle), collision=False)
+
+# Monster camps: a trampled earth disc and two low braziers at the edge.
+camps = [('camp_outer', (4200, 0)), ('camp_outer', (0, 4200)), ('camp_outer', (-4200, 0)), ('camp_outer', (0, -4200)),
+         ('camp_ruin', (-1550, -1350)), ('camp_ruin', (1500, -1500)), ('camp_ruin', (-1750, 1700)), ('camp_ruin', (1600, 1700)),
+         ('camp_elite', (0, 2750)), ('camp_elite', (0, -2750))]
+counts = {}
+for kind, (x, y) in camps:
+    index = counts.get(kind, 0)
+    counts[kind] = index + 1
+    radius = 480 if kind == 'camp_elite' else 420
+    area(kind, index, x, y, radius, 'Camp')
+    for side in (-1, 1):
+        prop('CampFire_%s_%d_%d' % (kind, index, side+1), (x + side*(radius+40), y, 20), (.6, .6, .4),
+             shape='Cylinder', material='Gold' if kind == 'camp_elite' else 'DarkStone')
+
+# Bushes: hide players from enemies outside (server rule). Walk-through leaf clumps over a dark ground patch.
+bushes = []
+for team in range(4):
+    for offset in (-13, 13):
+        angle = math.radians(45 + 90*team + offset)
+        bushes.append((math.cos(angle)*3050, math.sin(angle)*3050, 300))
+for x, y in ((3000, 1300), (-3000, -1300), (-1300, 3000), (1300, -3000), (2950, -1200), (-2950, 1200),
+             (1200, 3000), (-1200, -3000), (1150, -550), (-1150, 550)):
+    bushes.append((x, y, 260))
+leaf_rng = random.Random(20261128)
+for index, (x, y, radius) in enumerate(bushes):
+    area('bush', index, x, y, radius, 'LeafDark')
+    for clump in range(9):
+        angle = clump * math.tau / 9 + leaf_rng.uniform(-.2, .2)
+        reach = radius * (.25 if clump == 0 else leaf_rng.uniform(.45, .8))
+        size = leaf_rng.uniform(1.6, 2.3)
+        prop('Bush_%02d_%d' % (index, clump), (x + math.cos(angle)*reach, y + math.sin(angle)*reach, 55),
+             (size, size, leaf_rng.uniform(1.3, 1.7)), shape='Sphere', material='Leaf' if clump % 2 else 'LeafDark',
+             collision=False)
+
+# Rift gates: invisible markers; the client draws them only while the server says the rift is open.
+area('rift_gate', 0, -800, 0, 170, 'Rift', hidden=True)
+area('rift_gate', 1, 800, 0, 170, 'Rift', hidden=True)
+
+# Rift arena: sealed stone ring outside the field.
+ax, ay = ARENA_CENTER
+prop('RiftFloor', (ax, ay, -25), (24, 24, .5), material='DarkStone')
+area('rift_arena', 0, ax, ay, ARENA_RADIUS, 'Rift')
+for index in range(32):
+    angle = index * math.tau / 32
+    wall_radius = ARENA_RADIUS + 60
+    prop('RiftWall_%02d' % index, (ax + math.cos(angle)*wall_radius, ay + math.sin(angle)*wall_radius, 150),
+         (.4, 2.15, 3), material='Rift', yaw=math.degrees(angle))
+for index in range(6):
+    angle = index * math.tau / 6 + .26
+    prop('RiftPillar_%d' % index, (ax + math.cos(angle)*560, ay + math.sin(angle)*560, 130), (.8, .8, 2.6),
+         shape='Cylinder', material='Rift')
 
 rng = random.Random(20261011)
 # Broken paving offers readable routes without blocking pursuit or rolling.
@@ -115,11 +194,13 @@ prop('SouthBrokenColumn', (100,-650,90), (1.2,1.2,1.8), shape='Cylinder', materi
 prop('ExitLandmark', (-1100,900,1), (3.5,3.5,.02), shape='Cylinder', material='Path', collision=False)
 
 # Irregular distant rocks replace the enclosing walls and frame the open horizon.
-for index in range(32):
-    angle = index * math.tau / 32
-    x = math.cos(angle)*(3100+rng.uniform(-120,180))
-    y = math.sin(angle)*(2700+rng.uniform(-100,160))
-    height = rng.uniform(120,330)
+for index in range(48):
+    angle = index * math.tau / 48
+    x = math.cos(angle)*(5700+rng.uniform(-120,220))
+    y = math.sin(angle)*(5700+rng.uniform(-120,220))
+    height = rng.uniform(150,420)
+    if y > 0 and abs(x) < 2200:
+        continue  # keep the view of the rift arena clear
     prop('OuterRock_%02d' % index, (x,y,height*.25),
          (rng.uniform(3,6),rng.uniform(2.8,5),height/65), shape='Cube', material='DarkStone',
          yaw=rng.uniform(0,360), pitch=rng.uniform(-20,20), collision=False)
@@ -151,4 +232,4 @@ for actor in actors.get_all_level_actors():
         if abs(rotation.pitch) > .01 or abs(rotation.roll) > .01:
             raise RuntimeError('Paving tile is tilted: ' + actor.get_actor_label())
 unreal.log('ASCENSION_PAVING_FLAT PASS')
-unreal.log('ASCENSION_OPEN_RUINS_READY playable_width=5600 playable_depth=4800 props=' + str(len(actors.get_all_level_actors())))
+unreal.log('ASCENSION_OPEN_RUINS_READY playable_width=10000 playable_depth=10000 props=' + str(len(actors.get_all_level_actors())))
