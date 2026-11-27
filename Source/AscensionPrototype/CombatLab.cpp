@@ -2,6 +2,8 @@
 #include "HeroMotion.h"
 #include "CLNetSession.h"
 #include "CLCollisionVerify.h"
+#include "CLSkillComponent.h"
+#include "CLSkillVerify.h"
 #include "Camera/CameraComponent.h"
 #include "GameFramework/SpringArmComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
@@ -149,6 +151,7 @@ ACLHero::ACLHero()
     Arm = CreateDefaultSubobject<USpringArmComponent>(TEXT("CameraArm")); Arm->SetupAttachment(RootComponent);
     Arm->TargetArmLength = 650; Arm->bUsePawnControlRotation = true; Arm->bDoCollisionTest = true;
     Camera = CreateDefaultSubobject<UCameraComponent>(TEXT("Camera")); Camera->SetupAttachment(Arm);
+    Skills = CreateDefaultSubobject<UCLSkillComponent>(TEXT("Skills"));
 }
 void ACLHero::BeginPlay()
 {
@@ -179,7 +182,29 @@ void ACLHero::SetupPlayerInputComponent(UInputComponent* Input)
     Input->BindAction("NextEncounter",IE_Pressed,this,&ACLHero::NextEncounter);
     Input->BindAction("Choice1",IE_Pressed,this,&ACLHero::Choice1).bExecuteWhenPaused=true; Input->BindAction("Choice2",IE_Pressed,this,&ACLHero::Choice2).bExecuteWhenPaused=true;
     Input->BindAction("Choice3",IE_Pressed,this,&ACLHero::Choice3).bExecuteWhenPaused=true; Input->BindAction("Skip",IE_Pressed,this,&ACLHero::Skip).bExecuteWhenPaused=true;
+    Input->BindAction("SkillSlot1",IE_Pressed,this,&ACLHero::SkillSlot1); Input->BindAction("SkillSlot2",IE_Pressed,this,&ACLHero::SkillSlot2);
+    Input->BindAction("SkillSlot3",IE_Pressed,this,&ACLHero::SkillSlot3); Input->BindAction("SkillSlot4",IE_Pressed,this,&ACLHero::SkillSlot4);
+    Input->BindAction("SwapWeapon",IE_Pressed,this,&ACLHero::SwapWeapon);
 }
+void ACLHero::SkillSlot1() { Skills->UseSlot(0); }
+void ACLHero::SkillSlot2() { Skills->UseSlot(1); }
+void ACLHero::SkillSlot3() { Skills->UseSlot(2); }
+void ACLHero::SkillSlot4() { Skills->UseSlot(3); }
+void ACLHero::SwapWeapon() { if(HP>0) Skills->SwapWeapon(); }
+bool ACLHero::CanStartSkill() const
+{
+    const double T=Lab::Now(this);
+    return HP>0 && !bCharging && T>=AttackEnd && T>=DodgeEnd && Offers.IsEmpty() && !bInventoryOpen && !bLevelChoice;
+}
+bool ACLHero::IsInAction() const { return Lab::Now(this)<AttackEnd; }
+void ACLHero::PlaySkillAction(float Seconds,bool bHeavyClip)
+{
+    // 일반 공격과 같은 동작 시간 값을 쓰되 bResolved=true로 두어 검기·근접 판정(ResolveSwing)은 일어나지 않는다.
+    const double T=Lab::Now(this);
+    AttackStart=T; AttackEnd=T+FMath::Max(.1f,Seconds); HitTime=T; bResolved=true; bHeavy=bHeavyClip; bEmpowered=false; VisualState=-1;
+    SwingDirection=FRotator(0,GetControlRotation().Yaw,0).Vector(); SetActorRotation(SwingDirection.Rotation());
+}
+void ACLHero::SetWeaponVisual(ECLWeapon NewWeapon) { if(Sword && HP>0) Sword->SetVisibility(NewWeapon==ECLWeapon::Sword); }
 bool ACLHero::UsesBladeWave() const { const AAscensionMode* Mode=Cast<AAscensionMode>(GetWorld()->GetAuthGameMode()); return Mode && Mode->bSurvival; }
 void ACLHero::Forward(float V) { MoveForward=V; if(!bNetMovement && HP>0 && Lab::Now(this)>=DodgeEnd && (UsesBladeWave() || Lab::Now(this)>=AttackEnd)) AddMovementInput(FRotator(0,GetControlRotation().Yaw,0).Vector(),V); }
 void ACLHero::Right(float V) { MoveRight=V; if(!bNetMovement && HP>0 && Lab::Now(this)>=DodgeEnd && (UsesBladeWave() || Lab::Now(this)>=AttackEnd)) AddMovementInput(FRotationMatrix(FRotator(0,GetControlRotation().Yaw,0)).GetUnitAxis(EAxis::Y),V); }
@@ -552,7 +577,7 @@ void ACLHero::ResetLife()
     Inventory.Empty(); Weapon=Lab::Item(0,0); Armor=Lab::Item(1,0); bInventoryOpen=false; SelectedItem=0;
     GetMesh()->SetVisibility(bHasModel); Sword->SetVisibility(true); Body->SetVisibility(!bHasModel); VisualState=-1;
     bResolved=true; bCharging=false; ReleasedCharge=0; AttackEnd=DodgeEnd=ImmuneEnd=DodgeReady=SkillReady=PerfectUntil=0; Combo=0; AltarUses=0; LastCombo=-100;
-    MoveForward=MoveRight=0; HurtUntil=0;
+    MoveForward=MoveRight=0; HurtUntil=0; Skills->ResetForNewLife();
     GetCharacterMovement()->StopMovementImmediately(); SetActorLocation(FVector(-750,0,100));
     GetWorldTimerManager().ClearTimer(ImpactPauseTimer); CustomTimeDilation=1.f; CameraImpactUntil=HitMarkerUntil=0; Camera->SetRelativeLocation(FVector::ZeroVector);
     if(Controller) Controller->SetControlRotation(FRotator(-30,0,0));
@@ -963,9 +988,12 @@ void AAscensionMode::BeginPlay()
     if(FParse::Param(FCommandLine::Get(),TEXT("AscensionHordeView")) || FParse::Param(FCommandLine::Get(),TEXT("AscensionFloorView"))) bView=bSurvival=true;
     if(FParse::Param(FCommandLine::Get(),TEXT("AscensionBossVerify"))) bSurvival=true;
     if(FParse::Param(FCommandLine::Get(),TEXT("AscensionBossView"))) bView=bSurvival=true;
+    const bool bSkillVerify=FParse::Param(FCommandLine::Get(),TEXT("AscensionSkillVerify"));
+    if(bSkillVerify) bSurvival=false; // 증원 없이 시험 전용 몬스터만 쓴다
     FString ServerAddress;
     bOnline=!bVerify && !bView && !bSpawnVerify && FParse::Value(FCommandLine::Get(),TEXT("AscensionServer="),ServerAddress);
     ResetSurvival(); SpawnEncounter(); NextCheck=Lab::Now(this)+1;
+    if(bSkillVerify) GetWorld()->SpawnActor<ACLSkillVerifier>();
     if(bSurvival) if(ACLHero* P=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0))) P->Notice=TEXT("사냥하며 강화 → 중앙 제단 E로 수문장 소환 → 처치 후 중앙 E로 다음 층");
     if(bOnline)
     {
@@ -1877,6 +1905,26 @@ void ACLHUD::DrawHUD()
     else DrawText(FString::Printf(TEXT("각성과 탐욕의 탑 · 전투 %d · 남은 몬스터 %d"),Mode?Mode->Wave:1,Mode?Mode->RemainingEnemies():0),FLinearColor::White,25,22,nullptr,1.15);
     DrawText(FString::Printf(TEXT("체력 %.0f / 100    회피 %.1f초    Q 스킬 %.1f초    락온 %s"),P->HP,FMath::Max(0.,P->DodgeReady-Lab::Now(P)),FMath::Max(0.,P->SkillReady-Lab::Now(P)),IsValid(P->Locked)?TEXT("켜짐"):TEXT("꺼짐")),FLinearColor::White,25,49);
     DrawText(Mode && Mode->bSurvival?TEXT("WASD 이동 · 좌클릭 검기 · 우클릭 누르기: 충전 / 놓기: 발사 · Space 회피"):TEXT("WASD 이동 · 마우스 시점 · 좌클릭 검 공격 · 우클릭 강공격 · Space 회피"),FLinearColor::White,25,74);
+    if(UCLSkillComponent* S=P->Skills)
+    {
+        // 스킬 바(오른쪽 아래): 무기·마나·슬롯 4칸. 회색 = 아직 구현되지 않은 스킬
+        const float W=4*96.f,X=Canvas->SizeX-W-20,Y=Canvas->SizeY-128.f;
+        DrawRect(FLinearColor(0,0,0,.85f),X-8,Y-8,W+16,118);
+        DrawText(FString::Printf(TEXT("무기: %s  (F 교체)   마나 %.0f / %.0f"),S->Weapon==ECLWeapon::Sword?TEXT("검"):TEXT("활"),S->Mana,S->MaxMana()),FLinearColor::White,X,Y-4);
+        DrawRect(FLinearColor(.1f,.12f,.25f),X,Y+18,W-6,6);
+        DrawRect(FLinearColor(.3f,.5f,1.f),X,Y+18,(W-6)*FMath::Clamp(S->Mana/S->MaxMana(),0.f,1.f),6);
+        const TCHAR* Keys[]={TEXT("Z"),TEXT("X"),TEXT("C"),TEXT("V")};
+        for(int32 I=0;I<UCLSkillComponent::SlotCount;++I)
+        {
+            const float SX=X+I*96.f,SY=Y+30; const FCLSkillDef* Def=S->Slots[I]; const double Left=S->CooldownLeft(I);
+            DrawRect(FLinearColor(.12f,.12f,.15f,1),SX,SY,90,54);
+            if(Def && Def->Cooldown>0 && Left>0) DrawRect(FLinearColor(.3f,.3f,.35f,1),SX,SY,90*float(Left/Def->Cooldown),54);
+            const FLinearColor C=!Def || !Def->Execute?FLinearColor(.45f,.45f,.45f):Def->Weapon==ECLWeapon::Sword?FLinearColor(1,.75f,.4f):FLinearColor(.5f,1,.6f);
+            DrawText(FString::Printf(TEXT("%s  %s"),Keys[I],Def?Def->DisplayName:TEXT("-")),C,SX+4,SY+3,nullptr,.9f);
+            if(Def) DrawText(Left>0?FString::Printf(TEXT("%.1f초"),Left):FString::Printf(TEXT("마나 %.0f"),Def->ManaCost),C,SX+4,SY+28,nullptr,.85f);
+        }
+        if(Lab::Now(P)<S->LastMessageUntil) DrawText(S->LastMessage,FLinearColor(1,.85f,.4f),X,Y-30);
+    }
     if(P->IsCharging())
     {
         const float X=Canvas->SizeX*.5f-145,Y=FMath::Min(Canvas->SizeY*.5f+65,Canvas->SizeY-250.f),Charge=P->ChargeProgress();

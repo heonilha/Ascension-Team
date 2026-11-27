@@ -3,6 +3,7 @@
 #include "GameFramework/Character.h"
 #include "GameFramework/GameModeBase.h"
 #include "GameFramework/HUD.h"
+#include "CLSkillTypes.h"
 #include "CombatLab.generated.h"
 
 class USpringArmComponent;
@@ -12,6 +13,7 @@ class ACLEnemy;
 class ACLHero;
 class UAnimSequence;
 class ACLNetSession;
+class UCLSkillComponent;
 
 USTRUCT()
 struct FCLItem
@@ -119,6 +121,14 @@ public:
     bool HasAwakening(int32 ID) const { return Awakenings.Contains(ID); }
     FString Notice;
     UPROPERTY() TObjectPtr<ACLEnemy> Locked;
+
+    // ---- 스킬 공통 틀 (CLSkillComponent). 검·활 스킬은 CLSwordSkills.cpp / CLBowSkills.cpp에 둔다 ----
+    UPROPERTY() TObjectPtr<UCLSkillComponent> Skills;
+    bool CanStartSkill() const;   // 살아 있고 공격·회피·충전·선택 창 중이 아님
+    bool IsInAction() const;      // 공격·스킬 동작 중(회피하면 끊긴다)
+    // 스킬 시전 동작: Seconds 동안 검 휘두르기 동작을 보여 주고 일반 공격·다른 스킬을 막는다
+    void PlaySkillAction(float Seconds, bool bHeavyClip);
+    void SetWeaponVisual(ECLWeapon NewWeapon); // 활일 때 검 모델을 숨긴다(활 모델은 아직 없음)
 private:
     friend class AAscensionMode;
     void Forward(float Value); void Right(float Value);
@@ -127,6 +137,7 @@ private:
     void ResolveSwing();
     void Choice1() { Choose(0); } void Choice2() { Choose(1); } void Choice3() { Choose(2); }
     void Skip();
+    void SkillSlot1(); void SkillSlot2(); void SkillSlot3(); void SkillSlot4(); void SwapWeapon();
     UPROPERTY() TObjectPtr<USpringArmComponent> Arm;
     UPROPERTY() TObjectPtr<UCameraComponent> Camera;
     UPROPERTY() TObjectPtr<UStaticMeshComponent> Body;
