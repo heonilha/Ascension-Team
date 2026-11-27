@@ -131,6 +131,10 @@ public:
     // 스킬 시전 동작: Seconds 동안 검 휘두르기 동작을 보여 주고 일반 공격·다른 스킬을 막는다
     void PlaySkillAction(float Seconds, bool bHeavyClip);
     void SetWeaponVisual(ECLWeapon NewWeapon); // 활일 때 검 모델을 숨긴다(활 모델은 아직 없음)
+    // 스킬 창(K): 스킬 배우기·강화·각성·지우기와 스탯 분배. 그리기와 클릭은 ACLHUD(CLHud.cpp)
+    bool bSkillWindowOpen = false;
+    void ToggleSkillWindow();
+    void SetSkillWindowOpen(bool bOpen);
 private:
     friend class AAscensionMode;
     void Forward(float Value); void Right(float Value);
@@ -254,8 +258,9 @@ public:
     void AdvanceFloor();
     double SurvivalStart = 0, ReinforcementReady = 0, EliteReady = 0;
     float SurvivalElapsed() const;
-    static constexpr float ArenaHalfWidth = 2800.f;
-    static constexpr float ArenaHalfDepth = 2400.f;
+    // 배틀로얄 필드 100m × 100m(서버 room_layout.rs ARENA_HALF_*와 같다)
+    static constexpr float ArenaHalfWidth = 5000.f;
+    static constexpr float ArenaHalfDepth = 5000.f;
     static constexpr int32 MaxSurvivalEnemies = 48;
     double RefillReady = 0;
     void ResetSurvival();
@@ -280,4 +285,24 @@ class ACLHUD : public AHUD
     GENERATED_BODY()
 public:
     virtual void DrawHUD() override;
+    // 아래는 CLHud.cpp: 배틀로얄 HUD(체력·마나·경험치, 스킬 바, 매치·균열, 미니맵)와 스킬 창(K)
+    void DrawBattleHud(ACLHero* P, AAscensionMode* Mode);
+    void DrawSkillWindow(ACLHero* P);
+    const struct FCLSkillDef* SelectedSkill = nullptr; // 스킬 창에서 고른 스킬
+    int32 SkillTab = 0;                                // 0 검, 1 활
+private:
+    void DrawVitals(ACLHero* P, ACLNetSession* Net);
+    void DrawSkillBar(ACLHero* P);
+    void DrawMatchPanel(ACLHero* P, ACLNetSession* Net);
+    void DrawMinimap(ACLHero* P, ACLNetSession* Net);
+    // 그리기 도우미
+    float UI = 1;                   // 화면 크기 배율(720p = 1)
+    float MouseX = -1, MouseY = -1; // 이번 프레임의 마우스 위치
+    bool bClick = false;            // 이번 프레임에 왼쪽 버튼을 눌렀다
+    void Panel(float X, float Y, float W, float H, const FLinearColor& Fill, const FLinearColor& Edge);
+    void Bar(float X, float Y, float W, float H, float Ratio, const FLinearColor& Fill, const FLinearColor& Back);
+    void Text(const FString& S, float X, float Y, const FLinearColor& C, float Size = 1, int32 Align = 0); // Align: 0 왼쪽, 1 가운데, 2 오른쪽
+    float TextWidth(const FString& S, float Size = 1);
+    bool Hover(float X, float Y, float W, float H) const;
+    bool Button(const FString& Label, float X, float Y, float W, float H, bool bEnabled, const FLinearColor& Accent);
 };

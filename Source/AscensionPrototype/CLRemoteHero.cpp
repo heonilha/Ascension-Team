@@ -127,5 +127,20 @@ void ACLRemoteHero::UpdateVisual(double RenderTime, float Delta)
         if (State != 4) Lab::AlignBodyForward(GetMesh(), 0.f);
     }
 
-    DrawDebugString(GetWorld(), FVector(0, 0, 125), FString::Printf(TEXT("Lv %d %s"), Level, *DisplayName), this, bAlly ? FColor(120, 255, 150) : FColor(255, 110, 90), 0, true);
+    if (!bHiddenInBush) // 숨은 적은 이름표도 감춘다
+        DrawDebugString(GetWorld(), FVector(0, 0, 125), FString::Printf(TEXT("Lv %d %s"), Level, *DisplayName), this, bAlly ? FColor(120, 255, 150) : FColor(255, 110, 90), 0, true);
+}
+
+void ACLRemoteHero::SetHiddenInBush(bool bInBush)
+{
+    bHiddenInBush = bInBush;
+    SetActorHiddenInGame(bInBush);
+}
+
+void ACLRemoteHero::ResetTo(const FVector& Position, float Yaw)
+{
+    Samples.Reset();
+    const FVector At(Position.X, Position.Y, GetActorLocation().Z);
+    SetActorLocationAndRotation(At, FRotator(0, Yaw, 0), false, nullptr, ETeleportType::TeleportPhysics);
+    LastPosition = At;
 }

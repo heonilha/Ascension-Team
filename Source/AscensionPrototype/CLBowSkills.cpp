@@ -24,25 +24,25 @@ void CLRegisterBowSkills(TArray<FCLSkillDef>& Out)
 {
     using S = ECLStat; using T = ECLSkillTier; using P = ECLSkillShape;
     auto Add = [&](const TCHAR* Id, const TCHAR* Name, S Stat, T Tier, P Shape, float Range, float Radius, float Speed,
-                   float Multiplier, int32 Hits, float Cooldown, float Mana, float Cast, float Action, FCLSkillExecute Execute)
+                   float Multiplier, int32 Hits, float Cooldown, float Mana, float Cast, float Action, FCLSkillExecute Execute, const TCHAR* Effect = TEXT(""))
     {
         FCLSkillDef D; D.Id = FName(Id); D.DisplayName = Name; D.Weapon = ECLWeapon::Bow; D.Stat = Stat; D.Tier = Tier; D.Shape = Shape;
         D.Range = Range; D.Radius = Radius; D.Speed = Speed; D.Multiplier = Multiplier; D.Hits = Hits;
-        D.Cooldown = Cooldown; D.ManaCost = Mana; D.CastTime = Cast; D.ActionTime = Action; D.Execute = Execute;
+        D.Cooldown = Cooldown; D.ManaCost = Mana; D.CastTime = Cast; D.ActionTime = Action; D.Execute = Execute; D.Effect = Effect;
         Out.Add(D);
     };
     //   Id                 이름               스탯             티어             모양            거리  반경  속도  배율 타수 쿨 마나 준비 동작 실행
-    Add(TEXT("Bow.Power"),  TEXT("강궁 사격"),  S::Strength,     T::Basic,        P::Projectile,     0,   0,    0, 0.f, 1, 0, 0, 0, .5f, nullptr); // 충전할수록 강함
-    Add(TEXT("Bow.Pierce"), TEXT("꿰뚫기"),    S::Strength,     T::Intermediate, P::Line,           0,   0,    0, 0.f, 1, 0, 0, 0, .5f, nullptr); // 직선상 모든 적
-    Add(TEXT("Bow.Giant"),  TEXT("거대 화살"),  S::Strength,     T::Advanced,     P::Projectile,     0,   0,    0, 0.f, 1, 0, 0, 0, .5f, nullptr); // 넉백 + 착탄 경직
-    Add(TEXT("Bow.Rapid"),  TEXT("속사"),      S::Agility,      T::Basic,        P::Projectile,  1500,  30, 2600, 1.5f, 1, 2, 5, 0, .3f, Rapid);
-    Add(TEXT("Bow.Multi"),  TEXT("다연발"),    S::Agility,      T::Intermediate, P::Cone,           0,   0,    0, 0.f, 1, 0, 0, 0, .5f, nullptr); // 범위 연속 공격
-    Add(TEXT("Bow.Shadow"), TEXT("그림자 사격"), S::Agility,     T::Advanced,     P::Projectile,     0,   0,    0, 0.f, 1, 0, 0, 0, .5f, nullptr); // 동작 미정
-    Add(TEXT("Bow.Ice"),    TEXT("얼음 화살"),  S::Intelligence, T::Basic,        P::Projectile,     0,   0,    0, 0.f, 1, 0, 0, 0, .5f, nullptr); // 슬로우
-    Add(TEXT("Bow.Homing"), TEXT("추적 화살"),  S::Intelligence, T::Intermediate, P::Projectile,     0,   0,    0, 0.f, 1, 0, 0, 0, .5f, nullptr);
-    Add(TEXT("Bow.Storm"),  TEXT("마력 폭풍"),  S::Intelligence, T::Advanced,     P::Circle,         0,   0,    0, 0.f, 1, 0, 0, 0, .5f, nullptr); // 광역
+    Add(TEXT("Bow.Power"),  TEXT("강궁 사격"),  S::Strength,     T::Basic,        P::Projectile,     0,   0,    0, 0.f, 1, 0, 0, 0, .5f, nullptr, TEXT("충전할수록 강해짐")); // 충전할수록 강함
+    Add(TEXT("Bow.Pierce"), TEXT("꿰뚫기"),    S::Strength,     T::Intermediate, P::Line,           0,   0,    0, 0.f, 1, 0, 0, 0, .5f, nullptr, TEXT("직선상 모든 적 관통")); // 직선상 모든 적
+    Add(TEXT("Bow.Giant"),  TEXT("거대 화살"),  S::Strength,     T::Advanced,     P::Projectile,     0,   0,    0, 0.f, 1, 0, 0, 0, .5f, nullptr, TEXT("넉백 + 착탄 경직")); // 넉백 + 착탄 경직
+    Add(TEXT("Bow.Rapid"),  TEXT("속사"),      S::Agility,      T::Basic,        P::Projectile,  1500,  30, 2600, 1.5f, 1, 2, 5, 0, .3f, Rapid, TEXT("빠른 발사"));
+    Add(TEXT("Bow.Multi"),  TEXT("다연발"),    S::Agility,      T::Intermediate, P::Cone,           0,   0,    0, 0.f, 1, 0, 0, 0, .5f, nullptr, TEXT("범위 연속 공격")); // 범위 연속 공격
+    Add(TEXT("Bow.Shadow"), TEXT("그림자 사격"), S::Agility,     T::Advanced,     P::Projectile,     0,   0,    0, 0.f, 1, 0, 0, 0, .5f, nullptr, TEXT("동작 미정")); // 동작 미정
+    Add(TEXT("Bow.Ice"),    TEXT("얼음 화살"),  S::Intelligence, T::Basic,        P::Projectile,     0,   0,    0, 0.f, 1, 0, 0, 0, .5f, nullptr, TEXT("맞은 적 슬로우")); // 슬로우
+    Add(TEXT("Bow.Homing"), TEXT("추적 화살"),  S::Intelligence, T::Intermediate, P::Projectile,     0,   0,    0, 0.f, 1, 0, 0, 0, .5f, nullptr, TEXT("대상을 따라감"));
+    Add(TEXT("Bow.Storm"),  TEXT("마력 폭풍"),  S::Intelligence, T::Advanced,     P::Circle,         0,   0,    0, 0.f, 1, 0, 0, 0, .5f, nullptr, TEXT("광역 마력 폭발")); // 광역
     // 체력 계열은 기획안에서 재검토 중(현재 세트 vs "흔들리지 않는 사수" 세트). 확정되면 바꾼다.
-    Add(TEXT("Bow.Shield"), TEXT("보호막(활)"), S::Vitality,     T::Basic,        P::Self,           0,   0,    0, 0.f, 0, 0, 0, 0, .3f, nullptr);
-    Add(TEXT("Bow.Bind"),   TEXT("속박 화살"),  S::Vitality,     T::Intermediate, P::Projectile,     0,   0,    0, 0.f, 1, 0, 0, 0, .5f, nullptr);
-    Add(TEXT("Bow.Heal"),   TEXT("치유의 비"),  S::Vitality,     T::Advanced,     P::Circle,         0,   0,    0, 0.f, 0, 0, 0, 0, .5f, nullptr);
+    Add(TEXT("Bow.Shield"), TEXT("보호막(활)"), S::Vitality,     T::Basic,        P::Self,           0,   0,    0, 0.f, 0, 0, 0, 0, .3f, nullptr, TEXT("피해 흡수(체력 계열 재검토 중)"));
+    Add(TEXT("Bow.Bind"),   TEXT("속박 화살"),  S::Vitality,     T::Intermediate, P::Projectile,     0,   0,    0, 0.f, 1, 0, 0, 0, .5f, nullptr, TEXT("맞은 적 속박"));
+    Add(TEXT("Bow.Heal"),   TEXT("치유의 비"),  S::Vitality,     T::Advanced,     P::Circle,         0,   0,    0, 0.f, 0, 0, 0, 0, .5f, nullptr, TEXT("범위 안 아군 치유"));
 }

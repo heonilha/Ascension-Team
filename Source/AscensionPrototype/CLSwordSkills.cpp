@@ -33,24 +33,24 @@ void CLRegisterSwordSkills(TArray<FCLSkillDef>& Out)
 {
     using S = ECLStat; using T = ECLSkillTier; using P = ECLSkillShape;
     auto Add = [&](const TCHAR* Id, const TCHAR* Name, S Stat, T Tier, P Shape, float Range, float Radius, float HalfAngle,
-                   float Multiplier, int32 Hits, float Cooldown, float Mana, float Cast, float Action, FCLSkillExecute Execute)
+                   float Multiplier, int32 Hits, float Cooldown, float Mana, float Cast, float Action, FCLSkillExecute Execute, const TCHAR* Effect = TEXT(""))
     {
         FCLSkillDef D; D.Id = FName(Id); D.DisplayName = Name; D.Weapon = ECLWeapon::Sword; D.Stat = Stat; D.Tier = Tier; D.Shape = Shape;
         D.Range = Range; D.Radius = Radius; D.HalfAngle = HalfAngle; D.Multiplier = Multiplier; D.Hits = Hits;
-        D.Cooldown = Cooldown; D.ManaCost = Mana; D.CastTime = Cast; D.ActionTime = Action; D.Execute = Execute;
+        D.Cooldown = Cooldown; D.ManaCost = Mana; D.CastTime = Cast; D.ActionTime = Action; D.Execute = Execute; D.Effect = Effect;
         Out.Add(D);
     };
     //   Id                    이름             스탯          티어            모양          거리   반경 반각  배율  타수 쿨  마나 준비 동작 실행
-    Add(TEXT("Sword.Smash"),   TEXT("강타"),     S::Strength,     T::Basic,        P::Cone,       220,    0, 40,  2.0f, 1,  4,  10, 0,   .5f, Smash);
-    Add(TEXT("Sword.Spin"),    TEXT("회전베기"), S::Strength,     T::Intermediate, P::Circle,       0,  300,  0,  1.2f, 3, 10,  25, 0,   .9f, nullptr); // 시전 중 슈퍼아머
-    Add(TEXT("Sword.Quake"),   TEXT("지진참"),   S::Strength,     T::Advanced,     P::Line,       800,  120,  0, 12.0f, 1, 40,  60, 1,  1.4f, nullptr); // 넘어뜨림 1.5초
-    Add(TEXT("Sword.Quick"),   TEXT("빠른 베기"), S::Agility,     T::Basic,        P::Cone,       200,    0, 45,  .9f, 2,  2,   5, 0,   .4f, nullptr); // 공격 속도 영향
-    Add(TEXT("Sword.Shadow"),  TEXT("그림자 이동"), S::Agility,   T::Intermediate, P::Dash,       600,   80,  0,  1.5f, 1,  8,  20, 0,   .3f, nullptr); // 무적 0.3초, 3초 치명 +20%
-    Add(TEXT("Sword.Thunder"), TEXT("벽력일섬"), S::Agility,      T::Advanced,     P::Dash,      1000,   90,  0, 10.0f, 1, 35,  50, 0,   .5f, nullptr); // 돌진 중 무적
-    Add(TEXT("Sword.Wave"),    TEXT("검기 발사"), S::Intelligence, T::Basic,       P::Projectile, 1200,  55,  0,  1.8f, 1,  3,  15, 0,   .4f, nullptr); // 첫 적에게만
-    Add(TEXT("Sword.Arcane"),  TEXT("마검 발현"), S::Intelligence, T::Intermediate, P::Self,        0,    0,  0,  0.f, 0, 30,  40, 0,   .4f, nullptr); // 10초: 사거리 +50%, 평타 추가 40%
-    Add(TEXT("Sword.Excalibur"), TEXT("엑스칼리버"), S::Intelligence, T::Advanced, P::Circle,       0,  600,  0, 15.0f, 1, 60, 100, 1.5f, 1.9f, nullptr);
-    Add(TEXT("Sword.Shield"),  TEXT("보호막"),   S::Vitality,     T::Basic,        P::Self,         0,    0,  0,  0.f, 0, 15,  20, 0,   .3f, nullptr); // 최대 체력 20% 흡수 5초
-    Add(TEXT("Sword.Thirst"),  TEXT("피의 갈증"), S::Vitality,    T::Intermediate, P::Self,         0,    0,  0,  0.f, 0, 30,  30, 0,   .4f, nullptr); // 10초
-    Add(TEXT("Sword.Giant"),   TEXT("거대화"),   S::Vitality,     T::Advanced,     P::Self,         0,    0,  0,  0.f, 0, 60,  50, 0,   .6f, nullptr); // 15초, 주변 8m 도발 3초
+    Add(TEXT("Sword.Smash"),   TEXT("강타"),     S::Strength,     T::Basic,        P::Cone,       220,    0, 40,  2.0f, 1,  4,  10, 0,   .5f, Smash, TEXT("적 경직 0.5초"));
+    Add(TEXT("Sword.Spin"),    TEXT("회전베기"), S::Strength,     T::Intermediate, P::Circle,       0,  300,  0,  1.2f, 3, 10,  25, 0,   .9f, nullptr, TEXT("시전 중 슈퍼아머")); // 시전 중 슈퍼아머
+    Add(TEXT("Sword.Quake"),   TEXT("지진참"),   S::Strength,     T::Advanced,     P::Line,       800,  120,  0, 12.0f, 1, 40,  60, 1,  1.4f, nullptr, TEXT("검을 들어 1초 준비 후 지면 강타, 넘어뜨림 1.5초")); // 넘어뜨림 1.5초
+    Add(TEXT("Sword.Quick"),   TEXT("빠른 베기"), S::Agility,     T::Basic,        P::Cone,       200,    0, 45,  .9f, 2,  2,   5, 0,   .4f, nullptr, TEXT("공격 속도의 영향을 받음")); // 공격 속도 영향
+    Add(TEXT("Sword.Shadow"),  TEXT("그림자 이동"), S::Agility,   T::Intermediate, P::Dash,       600,   80,  0,  1.5f, 1,  8,  20, 0,   .3f, nullptr, TEXT("이동 중 무적 0.3초, 이동 후 3초간 치명타 +20%")); // 무적 0.3초, 3초 치명 +20%
+    Add(TEXT("Sword.Thunder"), TEXT("벽력일섬"), S::Agility,      T::Advanced,     P::Dash,      1000,   90,  0, 10.0f, 1, 35,  50, 0,   .5f, nullptr, TEXT("돌진 중 무적")); // 돌진 중 무적
+    Add(TEXT("Sword.Wave"),    TEXT("검기 발사"), S::Intelligence, T::Basic,       P::Projectile, 1200,  55,  0,  1.8f, 1,  3,  15, 0,   .4f, nullptr, TEXT("첫 적에게만 적중")); // 첫 적에게만
+    Add(TEXT("Sword.Arcane"),  TEXT("마검 발현"), S::Intelligence, T::Intermediate, P::Self,        0,    0,  0,  0.f, 0, 30,  40, 0,   .4f, nullptr, TEXT("10초간 사거리 +50%, 평타마다 마법 피해 40% 추가")); // 10초: 사거리 +50%, 평타 추가 40%
+    Add(TEXT("Sword.Excalibur"), TEXT("엑스칼리버"), S::Intelligence, T::Advanced, P::Circle,       0,  600,  0, 15.0f, 1, 60, 100, 1.5f, 1.9f, nullptr, TEXT("1.5초 준비 후 거대 빛의 검 낙하"));
+    Add(TEXT("Sword.Shield"),  TEXT("보호막"),   S::Vitality,     T::Basic,        P::Self,         0,    0,  0,  0.f, 0, 15,  20, 0,   .3f, nullptr, TEXT("5초간 최대 체력 20% 피해 흡수")); // 최대 체력 20% 흡수 5초
+    Add(TEXT("Sword.Thirst"),  TEXT("피의 갈증"), S::Vitality,    T::Intermediate, P::Self,         0,    0,  0,  0.f, 0, 30,  30, 0,   .4f, nullptr, TEXT("10초간 잃은 체력 10%당 공격력 +5%(최대 40%), 피흡 15%")); // 10초
+    Add(TEXT("Sword.Giant"),   TEXT("거대화"),   S::Vitality,     T::Advanced,     P::Self,         0,    0,  0,  0.f, 0, 60,  50, 0,   .6f, nullptr, TEXT("15초간 크기 1.5배, 최대 체력 +30%, 받는 피해 -30%, 넉백 면역, 주변 8m 도발 3초")); // 15초, 주변 8m 도발 3초
 }

@@ -53,6 +53,7 @@ struct FCLSkillDef
     float CastTime = 0;    // 준비 시간(초). 이 시간이 지난 뒤 Execute를 부른다
     float ActionTime = .5f;// 시전 동작 시간(초). 이 동안 일반 공격·회피·다른 스킬을 막는다
     FCLSkillExecute Execute = nullptr;
+    const TCHAR* Effect = TEXT(""); // 특수 효과 설명(스킬 창 표시용). 예: TEXT("적 경직 0.5초")
 };
 
 // 각 무기 파일이 자기 스킬을 등록한다. 공용 파일을 고치지 않고 스킬을 추가하기 위한 진입점이다.

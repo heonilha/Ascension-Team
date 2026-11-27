@@ -26,6 +26,10 @@ public:
     void PushSample(double ServerTime, const FVector& Position, float Yaw, uint8 State);
     // ACLNetSession이 매 프레임 부른다. RenderTime(서버 시간)의 위치를 보간해 그린다.
     void UpdateVisual(double RenderTime, float Delta);
+    // 풀숲(v7): 서버가 숨김 항목을 보내면 감추고, 다시 보이면 보간 없이 그 자리에 놓는다
+    bool bHiddenInBush = false;
+    void SetHiddenInBush(bool bInBush);
+    void ResetTo(const FVector& Position, float Yaw); // 순간 이동(균열)·다시 보임: 보간 기록을 지운다
 
     uint32 PlayerId = 0;
     FString DisplayName;

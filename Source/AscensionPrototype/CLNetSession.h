@@ -59,6 +59,33 @@ public:
     FProgressView MyProgress;
     FString ProgressText() const; // 한 줄 요약(HUD)
 
+    // ---- 균열(S_RiftState, v7). 2라운드 + 2분에 중앙 광장 입구 2개가 열린다 ----
+    struct FRiftView
+    {
+        bool bValid = false;
+        uint8 Phase = 0; // Proto::RiftPhase
+        uint8 GateTeam[2] = {0, 0};
+        FVector2D Gate[2] = {FVector2D::ZeroVector, FVector2D::ZeroVector};
+        float GateRadius = 170;
+        FVector2D Arena = FVector2D::ZeroVector;
+        float ArenaRadius = 1000;
+        uint32 PhaseStartMs = 0, PhaseEndMs = 0, ShrinkStartMs = 0, ShrinkEndMs = 0, LateMs = 0;
+        float DamageEarly = 0, DamageLate = 0;
+        uint16 BossId = 0;
+        uint8 Winner = 0, RewardStats = 3;
+        uint32 RewardXp = 400;
+    } Rift;
+    bool bInRift = false;          // 내가 균열 전투장 안에 있다
+    FString RiftText() const;      // 한 줄 요약(없으면 빈 문자열)
+    float RiftZoneRadiusNow() const;
+    bool RiftGateOpenFor(int32 Gate, uint8 Team) const; // 그 입구로 내 팀이 들어갈 수 있는가(표시용)
+    double SecondsLeft(uint32 ServerMs) const { return SecondsUntil(ServerMs); }
+    const TMap<uint32, TObjectPtr<ACLRemoteHero>>& RemoteHeroes() const { return Remotes; }
+
+    // ---- 스킬·스탯 포인트 쓰기(v7): 스킬 창이 부르고 서버가 S_Loadout으로 답한다 ----
+    void SendSkillCommand(uint8 Action, uint8 Number);
+    void SendStatCommand(uint8 Stat, uint8 Amount);
+
     // 로컬에서 회피·공격을 시작한 순간 부른다. 판정은 서버 결과(S_HitResult)로 받는다.
     void SendDodge(const FVector& Direction);
     void SendAttack(float Yaw);
@@ -87,6 +114,8 @@ private:
     uint32 ServerNowMs() const;
     void SpawnRemote(uint32 Id, const char* Name, const FVector& Position, float Yaw, uint8 Team);
     void DrawZone() const;
+    void DrawRift() const;
+    void BindSkillCommands();
     double SecondsUntil(uint32 ServerMs) const;
     void RemoveRemote(uint32 Id);
     void Fail(const FString& Reason);
@@ -141,7 +170,8 @@ private:
     uint32 WavesSent = 0, WavesConfirmed = 0; // 보낸 검기 / 서버가 인정한 검기
     double NextMonsterLog = 0;
     uint32 AutoDodgeAttack = 0;       // 자동 회피를 걸어 둔 공격(취소되면 회피도 취소)
-    double NextAutoHunt = 0, DeadSince = 0;
+    double NextAutoHunt = 0, DeadSince = 0, NextAutoLearn = 0;
+    FVector AutoHuntMove = FVector::ZeroVector; // -AscensionNetAutoHunt 이동 방향
     bool bSkipNextAckCompare = false; // 부활 직후 첫 확정은 옛 위치 기준 예측과 비교하지 않는다
 
     // 다른 플레이어의 검기(연출만)

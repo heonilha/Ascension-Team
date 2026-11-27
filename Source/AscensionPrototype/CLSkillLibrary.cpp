@@ -62,6 +62,7 @@ namespace CLSkill
         const FVector Location = Target->GetActorLocation();
         Target->ReceiveHit(Damage < 0 ? Ctx.Damage : Damage, Location - Ctx.Origin);
         if (Ctx.Hero) Ctx.Hero->ImpactFeedback(Feedback, Location);
+        if (Ctx.Skills) Ctx.Skills->NoteCombat(); // 전투 중에는 스킬을 지울 수 없다
     }
 
     int32 HitAll(const FCLSkillContext& Ctx, const TArray<ACLEnemy*>& Targets, float Damage, float Feedback)

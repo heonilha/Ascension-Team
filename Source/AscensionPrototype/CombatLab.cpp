@@ -164,6 +164,28 @@ void ACLHero::BeginPlay()
         if(PC->PlayerCameraManager) { PC->PlayerCameraManager->ViewPitchMin=-65; PC->PlayerCameraManager->ViewPitchMax=-10; }
     }
     Notice = TEXT("엘리트를 처치하거나 금색 제단에서 각성을 얻으세요. R: 새 전투 시작");
+    // 화면 확인용 시험 옵션(자동 검증·스크린샷)
+    //   -AscensionLevel=N         오프라인 시작 레벨(스킬 창 포인트 확인)
+    //   -AscensionSkillWindow     시작하자마자 스킬 창을 연다(-AscensionSkillPick=Sword.Smash 로 고른 스킬)
+    //   -AscensionShot=<파일.png>  5초(-AscensionShotDelay=초) 뒤 화면을 저장하고 2초 뒤 끝낸다
+    int32 StartLevel=0; if(FParse::Value(FCommandLine::Get(),TEXT("AscensionLevel="),StartLevel)) Level=FMath::Clamp(StartLevel,1,20);
+    if(FParse::Param(FCommandLine::Get(),TEXT("AscensionSkillWindow")))
+    {
+        FTimerHandle Open; GetWorldTimerManager().SetTimer(Open,FTimerDelegate::CreateWeakLambda(this,[this]
+        {
+            SetSkillWindowOpen(true);
+            FString Pick; if(FParse::Value(FCommandLine::Get(),TEXT("AscensionSkillPick="),Pick))
+                if(APlayerController* PC=Cast<APlayerController>(Controller)) if(ACLHUD* Hud=Cast<ACLHUD>(PC->GetHUD())) Hud->SelectedSkill=UCLSkillComponent::FindSkill(FName(*Pick));
+        }),1.f,false);
+    }
+    FString Shot;
+    if(FParse::Value(FCommandLine::Get(),TEXT("AscensionShot="),Shot))
+    {
+        FTimerHandle Take,Quit;
+        float Delay=5; FParse::Value(FCommandLine::Get(),TEXT("AscensionShotDelay="),Delay); // 온라인 화면은 매치가 진행된 뒤 찍는다
+        GetWorldTimerManager().SetTimer(Take,FTimerDelegate::CreateWeakLambda(this,[Shot]{ FScreenshotRequest::RequestScreenshot(Shot,true,false); UE_LOG(LogTemp,Display,TEXT("ASCENSION_SHOT %s"),*Shot); }),Delay,false);
+        GetWorldTimerManager().SetTimer(Quit,FTimerDelegate::CreateWeakLambda(this,[]{ FPlatformMisc::RequestExit(false); }),Delay+2,false);
+    }
 }
 void ACLHero::SetupPlayerInputComponent(UInputComponent* Input)
 {
@@ -185,11 +207,25 @@ void ACLHero::SetupPlayerInputComponent(UInputComponent* Input)
     Input->BindAction("SkillSlot1",IE_Pressed,this,&ACLHero::SkillSlot1); Input->BindAction("SkillSlot2",IE_Pressed,this,&ACLHero::SkillSlot2);
     Input->BindAction("SkillSlot3",IE_Pressed,this,&ACLHero::SkillSlot3); Input->BindAction("SkillSlot4",IE_Pressed,this,&ACLHero::SkillSlot4);
     Input->BindAction("SwapWeapon",IE_Pressed,this,&ACLHero::SwapWeapon);
+    Input->BindAction("SkillWindow",IE_Pressed,this,&ACLHero::ToggleSkillWindow).bExecuteWhenPaused=true;
 }
-void ACLHero::SkillSlot1() { Skills->UseSlot(0); }
-void ACLHero::SkillSlot2() { Skills->UseSlot(1); }
-void ACLHero::SkillSlot3() { Skills->UseSlot(2); }
-void ACLHero::SkillSlot4() { Skills->UseSlot(3); }
+void ACLHero::ToggleSkillWindow() { SetSkillWindowOpen(!bSkillWindowOpen); }
+void ACLHero::SetSkillWindowOpen(bool bOpen)
+{
+    // 스킬 창(K): 마우스로 스킬을 배우고 스탯을 나눈다. 열려 있는 동안 공격·시점 회전을 막고, 이동·회피는 그대로 둔다.
+    bSkillWindowOpen=bOpen;
+    if(APlayerController* PC=Cast<APlayerController>(Controller))
+    {
+        PC->bShowMouseCursor=bOpen;
+        if(bOpen) { FInputModeGameAndUI Mode; Mode.SetHideCursorDuringCapture(false); Mode.SetLockMouseToViewportBehavior(EMouseLockMode::LockAlways); PC->SetInputMode(Mode); }
+        else PC->SetInputMode(FInputModeGameOnly());
+    }
+    if(bOpen) bCharging=false;
+}
+void ACLHero::SkillSlot1() { if(!bSkillWindowOpen) Skills->UseSlot(0); }
+void ACLHero::SkillSlot2() { if(!bSkillWindowOpen) Skills->UseSlot(1); }
+void ACLHero::SkillSlot3() { if(!bSkillWindowOpen) Skills->UseSlot(2); }
+void ACLHero::SkillSlot4() { if(!bSkillWindowOpen) Skills->UseSlot(3); }
 void ACLHero::SwapWeapon() { if(HP>0) Skills->SwapWeapon(); }
 bool ACLHero::CanStartSkill() const
 {
@@ -208,8 +244,8 @@ void ACLHero::SetWeaponVisual(ECLWeapon NewWeapon) { if(Sword && HP>0) Sword->Se
 bool ACLHero::UsesBladeWave() const { const AAscensionMode* Mode=Cast<AAscensionMode>(GetWorld()->GetAuthGameMode()); return Mode && Mode->bSurvival; }
 void ACLHero::Forward(float V) { MoveForward=V; if(!bNetMovement && HP>0 && Lab::Now(this)>=DodgeEnd && (UsesBladeWave() || Lab::Now(this)>=AttackEnd)) AddMovementInput(FRotator(0,GetControlRotation().Yaw,0).Vector(),V); }
 void ACLHero::Right(float V) { MoveRight=V; if(!bNetMovement && HP>0 && Lab::Now(this)>=DodgeEnd && (UsesBladeWave() || Lab::Now(this)>=AttackEnd)) AddMovementInput(FRotationMatrix(FRotator(0,GetControlRotation().Yaw,0)).GetUnitAxis(EAxis::Y),V); }
-void ACLHero::LookX(float V) { if(!IsValid(Locked)) AddControllerYawInput(V); }
-void ACLHero::LookY(float V) { AddControllerPitchInput(V); }
+void ACLHero::LookX(float V) { if(!IsValid(Locked) && !bSkillWindowOpen) AddControllerYawInput(V); }
+void ACLHero::LookY(float V) { if(!bSkillWindowOpen) AddControllerPitchInput(V); }
 void ACLHero::Tick(float Delta)
 {
     Super::Tick(Delta); const double T=Lab::Now(this); if(HP<=0) return;
@@ -303,11 +339,12 @@ void ACLHero::Tick(float Delta)
     const float Swing=T<AttackEnd ? FMath::Sin(float((T-AttackStart)/(AttackEnd-AttackStart))*PI)*120-60 : 0;
     if(!bHasModel) Sword->SetRelativeRotation(FRotator(0,Swing,0));
 }
-void ACLHero::Attack() { StartAttack(false); }
+void ACLHero::Attack() { if(!bSkillWindowOpen) StartAttack(false); }
 float ACLHero::ChargeProgress() const { return bCharging?FMath::Clamp(float((Lab::Now(this)-ChargeStart)/MaximumChargeSeconds),0.f,1.f):0.f; }
 bool ACLHero::CanReleaseHeavy() const { return bCharging && Lab::Now(this)-ChargeStart+1.e-6>=MinimumChargeSeconds; }
 void ACLHero::Heavy()
 {
+    if(bSkillWindowOpen) return;
     if(!UsesBladeWave()) { StartAttack(true); return; }
     const double T=Lab::Now(this);
     if(HP<=0 || bCharging || T<AttackEnd || T<DodgeEnd || !Offers.IsEmpty() || bInventoryOpen) return;
@@ -470,6 +507,7 @@ void ACLHero::ReceiveHit(float Damage)
     if(HP<=0) return;
     if(Lab::Now(this)<ImmuneEnd) { PerfectUntil=Lab::Now(this)+2; Notice=TEXT("정확한 회피! 2초 안에 검으로 공격하면 반격 피해가 증가합니다."); return; }
     HurtUntil=Lab::Now(this)+.2;
+    if(Skills) Skills->NoteCombat();
     HP=FMath::Max(0.f,HP-FMath::Max(1.f,Damage-ArmorReduction())); DrawDebugSphere(GetWorld(),GetActorLocation(),100,12,FColor::Red,false,.2,0,3);
     if(HP==0)
     {
@@ -546,7 +584,7 @@ void ACLHero::Choose(int32 Index)
     }
     PendingReplacement=-1; Offers.Empty(); Notice=TEXT("각성을 획득했습니다! 달라진 공격과 회피를 시험해보세요.");
 }
-void ACLHero::Skip() { if(bInventoryOpen) { bInventoryOpen=false; return; } Offers.Empty(); PendingReplacement=-1; if(bLevelChoice) { bLevelChoice=false; UGameplayStatics::SetGamePaused(this,false); } Notice=TEXT("새 강화를 포기했습니다. 기존 능력은 유지됩니다."); }
+void ACLHero::Skip() { if(bSkillWindowOpen) { SetSkillWindowOpen(false); return; } if(bInventoryOpen) { bInventoryOpen=false; return; } Offers.Empty(); PendingReplacement=-1; if(bLevelChoice) { bLevelChoice=false; UGameplayStatics::SetGamePaused(this,false); } Notice=TEXT("새 강화를 포기했습니다. 기존 능력은 유지됩니다."); }
 float ACLHero::WeaponBonus() const { return Weapon.ID.IsValid()?Weapon.Tier*4.f:0; }
 float ACLHero::ArmorReduction() const { return Armor.ID.IsValid() && Armor.Tier==1?3.f:0; }
 void ACLHero::ToggleInventory() { if(HP>0 && Offers.IsEmpty()) { bInventoryOpen=!bInventoryOpen; SelectedItem=0; if(bInventoryOpen) bCharging=false; } }
@@ -1899,58 +1937,28 @@ void AAscensionMode::SpawnEncounter(int32 Seed)
 void ACLHUD::DrawHUD()
 {
     Super::DrawHUD(); ACLHero* P=Cast<ACLHero>(GetOwningPawn()); if(!P || !Canvas) return;
-    const float BarWidth=FMath::Min(360.f,Canvas->SizeX-48.f),BarX=(Canvas->SizeX-BarWidth)*.5f,BarY=Canvas->SizeY-85.f;
-    const float Health=FMath::Clamp(P->HP/100.f,0.f,1.f);
-    DrawRect(FLinearColor(0,0,0,.85f),BarX-12,BarY-28,BarWidth+24,76);
-    DrawText(FString::Printf(TEXT("체력  %.0f / 100%s"),P->HP,P->HP>0 && P->HP<=30?TEXT("  · 위험"):TEXT("")),FLinearColor::White,BarX,BarY-23,nullptr,1.1f);
-    DrawRect(FLinearColor(.2f,.2f,.23f,1),BarX,BarY,BarWidth,16);
-    DrawRect(Lab::Now(P)<P->HurtUntil?FLinearColor::White:Health<=.3f?FLinearColor(.9f,.12f,.1f):FLinearColor(.12f,.8f,.65f),BarX,BarY,BarWidth*Health,16);
-    DrawRect(FLinearColor(0,0,0,.75f),12,12,FMath::Min(1000.f,Canvas->SizeX-24.f),190);
     AAscensionMode* Mode=Cast<AAscensionMode>(GetWorld()->GetAuthGameMode());
-    if(Mode && IsValid(Mode->Net)) DrawText(Mode->Net->StatusText(),FLinearColor(.55f,.85f,1.f),BarX-12,BarY-58,nullptr,1.f);
-    if(Mode && IsValid(Mode->Net) && Mode->Net->InMatch())
+    const bool bOnline=Mode && IsValid(Mode->Net);
+    // 배틀로얄 HUD(체력·마나·경험치, 스킬 바, 매치·균열, 미니맵): CLHud.cpp
+    DrawBattleHud(P,Mode);
+    const float UIScale=FMath::Clamp(Canvas->SizeY/720.f,.85f,1.6f);
+    // 왼쪽 위: 알림. 오프라인(1인 데모)에서는 이전 기획의 진행 정보와 조작법도 짧게 보여 준다
+    float InfoY=14*UIScale;
+    if(!bOnline)
     {
-        // 매치 진행(위쪽 가운데)과 큰 안내(가운데): 카운트다운·승리·부활 대기·탈락·자기장 밖
-        const FString Line=Mode->Net->MatchText(); float W=0,H=0; GetTextSize(Line,W,H,nullptr,1.1f);
-        DrawRect(FLinearColor(0,0,0,.8f),(Canvas->SizeX-W)*.5f-10,206,W+20,H+10);
-        DrawText(Line,Mode->Net->IsOutsideZone(P->GetActorLocation())?FLinearColor(1,.45f,.35f):FLinearColor(.7f,.85f,1.f),(Canvas->SizeX-W)*.5f,211,nullptr,1.1f);
-        const FString Banner=Mode->Net->MatchBanner();
-        if(!Banner.IsEmpty())
-        {
-            GetTextSize(Banner,W,H,nullptr,2.f);
-            DrawRect(FLinearColor(0,0,0,.7f),(Canvas->SizeX-W)*.5f-16,Canvas->SizeY*.32f-8,W+32,H+16);
-            DrawText(Banner,FLinearColor(1,.85f,.35f),(Canvas->SizeX-W)*.5f,Canvas->SizeY*.32f,nullptr,2.f);
-        }
+        const int32 Seconds=Mode?int32(Mode->SurvivalElapsed()):0;
+        const FString Line=Mode && Mode->bSurvival?(Mode->bRestArea?FString(TEXT("휴식 구역 · 두 층 등반 완료")):FString::Printf(TEXT("1인 데모 · %d층 · %d:%02d · 적 %d · %s"),Mode->CurrentFloor,Seconds/60,Seconds%60,Mode->RemainingEnemies(),Mode->bBossDefeated?TEXT("중앙 출구 개방"):Mode->bBossSpawned?TEXT("수문장 전투"):TEXT("사냥 / 중앙 E 소환"))):FString::Printf(TEXT("1인 데모 · 전투 %d · 남은 몬스터 %d"),Mode?Mode->Wave:1,Mode?Mode->RemainingEnemies():0);
+        DrawRect(FLinearColor(.05f,.06f,.09f,.75f),12*UIScale,12*UIScale,FMath::Min(620*UIScale,Canvas->SizeX*.5f),72*UIScale);
+        DrawText(Line,FLinearColor(.93f,.95f,.99f),20*UIScale,InfoY,nullptr,UIScale);
+        DrawText(TEXT("WASD 이동 · 좌클릭 공격 · 우클릭 충전 · Space 회피 · Z X C V 스킬 · F 무기 · K 스킬 창"),FLinearColor(.6f,.65f,.75f),20*UIScale,InfoY+24*UIScale,nullptr,.8f*UIScale);
+        DrawText(TEXT("Tab 락온 · Q 스킬 · E 제단 · I 가방 · R 새 도전 (이전 기획 기능)"),FLinearColor(.6f,.65f,.75f),20*UIScale,InfoY+44*UIScale,nullptr,.8f*UIScale);
+        InfoY+=80*UIScale;
     }
-    if(Mode && Mode->bSurvival)
+    if(!P->Notice.IsEmpty())
     {
-        const int32 Seconds=int32(Mode->SurvivalElapsed());
-        DrawText(Mode->bRestArea?TEXT("휴식 구역 · 두 층 등반 완료"):FString::Printf(TEXT("%d층 %s · 체류 %d:%02d · 적 %d · %s"),Mode->CurrentFloor,Mode->CurrentFloor==1?TEXT("폐허 정원"):TEXT("상층 정원"),Seconds/60,Seconds%60,Mode->RemainingEnemies(),Mode->bBossDefeated?TEXT("중앙 출구 개방"):Mode->bBossSpawned?TEXT("수문장 전투"):TEXT("사냥 / 중앙 E 소환")),FLinearColor::White,25,22,nullptr,1.15);
-        DrawRect(FLinearColor(.12f,.15f,.22f),BarX,BarY+25,BarWidth,6);
-        DrawRect(FLinearColor(.35f,.6f,1.f),BarX,BarY+25,BarWidth*FMath::Clamp(float(P->Experience)/P->ExperienceRequired(),0.f,1.f),6);
-    }
-    else DrawText(FString::Printf(TEXT("각성과 탐욕의 탑 · 전투 %d · 남은 몬스터 %d"),Mode?Mode->Wave:1,Mode?Mode->RemainingEnemies():0),FLinearColor::White,25,22,nullptr,1.15);
-    DrawText(FString::Printf(TEXT("체력 %.0f / 100    회피 %.1f초    Q 스킬 %.1f초    락온 %s"),P->HP,FMath::Max(0.,P->DodgeReady-Lab::Now(P)),FMath::Max(0.,P->SkillReady-Lab::Now(P)),IsValid(P->Locked)?TEXT("켜짐"):TEXT("꺼짐")),FLinearColor::White,25,49);
-    DrawText(Mode && Mode->bSurvival?TEXT("WASD 이동 · 좌클릭 검기 · 우클릭 누르기: 충전 / 놓기: 발사 · Space 회피"):TEXT("WASD 이동 · 마우스 시점 · 좌클릭 검 공격 · 우클릭 강공격 · Space 회피"),FLinearColor::White,25,74);
-    if(UCLSkillComponent* S=P->Skills)
-    {
-        // 스킬 바(오른쪽 아래): 무기·마나·슬롯 4칸. 회색 = 아직 구현되지 않은 스킬
-        const float W=4*96.f,X=Canvas->SizeX-W-20,Y=Canvas->SizeY-128.f;
-        DrawRect(FLinearColor(0,0,0,.85f),X-8,Y-8,W+16,118);
-        DrawText(FString::Printf(TEXT("무기: %s  (F 교체)   마나 %.0f / %.0f"),S->Weapon==ECLWeapon::Sword?TEXT("검"):TEXT("활"),S->Mana,S->MaxMana()),FLinearColor::White,X,Y-4);
-        DrawRect(FLinearColor(.1f,.12f,.25f),X,Y+18,W-6,6);
-        DrawRect(FLinearColor(.3f,.5f,1.f),X,Y+18,(W-6)*FMath::Clamp(S->Mana/S->MaxMana(),0.f,1.f),6);
-        const TCHAR* Keys[]={TEXT("Z"),TEXT("X"),TEXT("C"),TEXT("V")};
-        for(int32 I=0;I<UCLSkillComponent::SlotCount;++I)
-        {
-            const float SX=X+I*96.f,SY=Y+30; const FCLSkillDef* Def=S->Slots[I]; const double Left=S->CooldownLeft(I);
-            DrawRect(FLinearColor(.12f,.12f,.15f,1),SX,SY,90,54);
-            if(Def && Def->Cooldown>0 && Left>0) DrawRect(FLinearColor(.3f,.3f,.35f,1),SX,SY,90*float(Left/Def->Cooldown),54);
-            const FLinearColor C=!Def || !Def->Execute?FLinearColor(.45f,.45f,.45f):Def->Weapon==ECLWeapon::Sword?FLinearColor(1,.75f,.4f):FLinearColor(.5f,1,.6f);
-            DrawText(FString::Printf(TEXT("%s  %s"),Keys[I],Def?Def->DisplayName:TEXT("-")),C,SX+4,SY+3,nullptr,.9f);
-            if(Def) DrawText(Left>0?FString::Printf(TEXT("%.1f초"),Left):FString::Printf(TEXT("마나 %.0f"),Def->ManaCost),C,SX+4,SY+28,nullptr,.85f);
-        }
-        if(Lab::Now(P)<S->LastMessageUntil) DrawText(S->LastMessage,FLinearColor(1,.85f,.4f),X,Y-30);
+        float W=0,H=0; GetTextSize(P->Notice,W,H,nullptr,.9f*UIScale);
+        DrawRect(FLinearColor(.12f,.1f,.03f,.8f),12*UIScale,InfoY-4*UIScale,W+18*UIScale,H+8*UIScale);
+        DrawText(P->Notice,FLinearColor(1,.88f,.45f),21*UIScale,InfoY,nullptr,.9f*UIScale);
     }
     if(P->IsCharging())
     {
@@ -1965,7 +1973,6 @@ void ACLHUD::DrawHUD()
         const float MinimumX=X+290.f*ACLHero::MinimumChargeSeconds/ACLHero::MaximumChargeSeconds;
         DrawLine(MinimumX,Y+2,MinimumX,Y+16,FLinearColor(.7f,.8f,1.f),2);
     }
-    DrawText(Mode && Mode->bSurvival?TEXT("Tab 락온 · Q 스킬 · E 중앙 소환/층 이동 · I 가방 · R 새 도전"):TEXT("Tab 락온 · Q 스킬 · E 제단 · I 가방 · N 다음 전투 · R 다시 시작"),FLinearColor::White,25,97);
     if(Mode && Mode->bSurvival && P->Offers.IsEmpty())
         for(TActorIterator<ACLEnemy> It(GetWorld());It;++It) if(It->bBoss && It->HP>0)
         {
@@ -1976,20 +1983,12 @@ void ACLHUD::DrawHUD()
             DrawRect(FLinearColor(.9f,.28f,.12f),X,Y+25,420*FMath::Clamp(It->HP/It->MaxHP,0.f,1.f),10);
             DrawText(It->BossHint(),It->Phase==3?FLinearColor(.3f,1.f,.6f):FLinearColor(1,.8f,.4f),X,Y+45); break;
         }
-    DrawText(P->Notice,FLinearColor::Yellow,25,123);
-    FString Owned=TEXT("보유 각성: "); if(P->Awakenings.IsEmpty()) Owned+=TEXT("없음");
-    for(int32 I=0;I<P->Awakenings.Num();++I) Owned+=FString::Printf(TEXT("[%d] %s   "),I+1,Lab::Names[P->Awakenings[I]]);
-    DrawText(Owned,FLinearColor::White,25,148);
-    if(Mode && IsValid(Mode->Net) && Mode->Net->MyProgress.bValid)
+    if(!bOnline && !P->Awakenings.IsEmpty())
     {
-        // 온라인: 서버가 정한 레벨·경험치(1인 데모의 성장 대신)
-        DrawText(Mode->Net->ProgressText(),FLinearColor(.7f,.8f,1.f),25,174);
-        const auto& Pr=Mode->Net->MyProgress;
-        DrawRect(FLinearColor(.12f,.15f,.22f),BarX,BarY+25,BarWidth,6);
-        DrawRect(FLinearColor(.35f,.6f,1.f),BarX,BarY+25,BarWidth*(Pr.XpToNext?FMath::Clamp(float(Pr.Xp)/Pr.XpToNext,0.f,1.f):1.f),6);
+        FString Owned=TEXT("보유 각성: ");
+        for(int32 I=0;I<P->Awakenings.Num();++I) Owned+=FString::Printf(TEXT("[%d] %s   "),I+1,Lab::Names[P->Awakenings[I]]);
+        DrawText(Owned,FLinearColor(.8f,.85f,.95f),20*UIScale,InfoY+30*UIScale,nullptr,.8f*UIScale);
     }
-    else
-    DrawText(Mode && Mode->bSurvival?FString::Printf(TEXT("Lv %d · 경험치 %d/%d · 번개 %d · 칼날 %d · 검 강화 %d · 일반 검기 %d명"),P->Level,P->Experience,P->ExperienceRequired(),P->LightningRank,P->BladeRank,P->PowerRank,P->NormalWaveTargets()):TEXT("개발 중: 탑 등반 · 파티 · 멀티플레이"),FLinearColor(.7f,.8f,1.f),25,174);
     if(Mode && Mode->bVictory) DrawText(TEXT("휴식 구역 도착! 등반 완료 · R: 새 도전"),FLinearColor::Green,Canvas->SizeX*.5f-245,Canvas->SizeY*.5f,nullptr,1.3f);
     if(Mode && Mode->bEncounterCleared) DrawText(TEXT("전투 완료 · N: 다음 전투"),FLinearColor::Yellow,Canvas->SizeX*.5f-170,Canvas->SizeY-45);
     if(Lab::Now(P)<P->HitMarkerUntil)
@@ -2018,5 +2017,10 @@ void ACLHUD::DrawHUD()
             const FString Detail=ID==8 && P->bLevelChoice?FString::Printf(TEXT("일반 검기 %d → %d명 · 검 피해 +3 · 체력 +15 회복%s"),P->NormalWaveTargets(),FMath::Min(4,P->NormalWaveTargets()+1),P->NormalWaveTargets()==4?TEXT(" (대상 수 최대)"):TEXT("")):FString(Lab::Details[ID]);
             DrawText(Detail,Color,55,323+I*55);
         }
+    }
+    if(P->bSkillWindowOpen)
+    {
+        DrawSkillWindow(P); // 스킬 창(K)은 가장 위에
+        DebugTextList.Reset(); // 몬스터 이름표·피해 숫자(디버그 글자)가 창 위에 그려지지 않게 이번 프레임 것을 지운다
     }
 }

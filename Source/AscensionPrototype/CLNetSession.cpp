@@ -3,6 +3,7 @@
 #include "AscensionProtocol.h"
 #include "AscensionMovement.h"
 #include "CLRemoteHero.h"
+#include "CLSkillComponent.h"
 #include "CombatLab.h"
 
 #include "Components/CapsuleComponent.h"
@@ -214,6 +215,7 @@ void ACLNetSession::Tick(float Delta)
     Super::Tick(Delta);
     if (!Receiver) return;
     DrawZone();
+    DrawRift();
 
     if (State == EState::Connecting && Receiver->bConnected)
     {
@@ -320,6 +322,7 @@ void ACLNetSession::HandlePacket(const TArray<uint8>& Bytes, double ReceivedAt)
         ServerTimeOffset = ReceivedAt - Packet.serverTimeMs / 1000.0;
         if (ACLHero* Hero = LocalHero()) Hero->ImmuneDuration = IframeMs / 1000.0;
         StartPrediction(ToFVector(Packet.spawnPosition));
+        BindSkillCommands(); // 스킬 창의 배우기·스탯 분배를 서버로 보낸다
         for (int32 I = 0; I < Packet.count; ++I)
         {
             const Proto::PlayerInfo Info = ReadEntry<Proto::PlayerInfo>(Bytes, sizeof(Packet) + I * sizeof(Proto::PlayerInfo));
@@ -352,8 +355,15 @@ void ACLNetSession::HandlePacket(const TArray<uint8>& Bytes, double ReceivedAt)
         {
             const Proto::MoveEntry Entry = ReadEntry<Proto::MoveEntry>(Bytes, sizeof(Packet) + I * sizeof(Proto::MoveEntry));
             if (Entry.playerId == MyId) continue; // 내 이동은 이미 화면에 있다
-            if (TObjectPtr<ACLRemoteHero>* Remote = Remotes.Find(Entry.playerId); Remote && IsValid(*Remote))
-                (*Remote)->PushSample(ServerTime, ToFVector(Entry.position), Entry.yaw, uint8(Entry.state));
+            TObjectPtr<ACLRemoteHero>* Remote = Remotes.Find(Entry.playerId);
+            if (!Remote || !IsValid(*Remote)) continue;
+            if (Entry.state == Proto::MoveState::Hidden) { (*Remote)->SetHiddenInBush(true); continue; } // 풀숲에 숨었다(위치가 오지 않는다)
+            if ((*Remote)->bHiddenInBush)
+            {
+                (*Remote)->SetHiddenInBush(false);
+                (*Remote)->ResetTo(ToFVector(Entry.position), Entry.yaw); // 숨었던 동안의 이동을 보간하지 않는다
+            }
+            (*Remote)->PushSample(ServerTime, ToFVector(Entry.position), Entry.yaw, uint8(Entry.state));
         }
         break;
     }
@@ -435,6 +445,12 @@ void ACLNetSession::HandlePacket(const TArray<uint8>& Bytes, double ReceivedAt)
                 if (!Enemy) continue;
                 Enemy->InitPuppet(Entry.kind);
                 Monsters.Add(Entry.id, Enemy);
+            }
+            if (Rift.BossId && Entry.id == Rift.BossId && Enemy->MaxHP < 1000)
+            {
+                // 균열 보스: 지휘관 모습을 키우고 체력바를 서버 체력(1,200)에 맞춘다
+                Enemy->MaxHP = FMath::Max(1200.f, float(Entry.hp));
+                Enemy->SetActorScale3D(FVector(1.8f));
             }
             Enemy->PushNetSample(ServerTime, Position, Yaw, uint8(Entry.state), float(Entry.hp));
         }
@@ -651,9 +667,196 @@ void ACLNetSession::HandlePacket(const TArray<uint8>& Bytes, double ReceivedAt)
                Packet.respawnServerMs ? SecondsUntil(Packet.respawnServerMs) : -1.0);
         break;
     }
+    case Proto::PacketId::S_Teleport:
+    {
+        Proto::S_Teleport Packet;
+        if (!ReadFixed(Bytes, Packet)) break;
+        const bool bEnter = Packet.reason == Proto::TeleportReason::RiftEnter;
+        if (Packet.playerId == MyId)
+        {
+            // 균열 입장·퇴장: 서버가 옮겼다. 이미 보낸 입력의 예측은 옛 위치 기준이라 다음 확정과 비교하지 않는다.
+            bSkipNextAckCompare = true;
+            StartPrediction(ToFVector(Packet.position));
+            bInRift = bEnter;
+            if (ACLHero* Hero = LocalHero())
+            {
+                if (Hero->Controller) Hero->Controller->SetControlRotation(FRotator(-30, Packet.yaw, 0));
+                Hero->Notice = bEnter ? TEXT("균열 전투장에 들어왔습니다!") : TEXT("균열에서 나왔습니다");
+            }
+        }
+        else if (TObjectPtr<ACLRemoteHero>* Remote = Remotes.Find(Packet.playerId); Remote && IsValid(*Remote))
+        {
+            (*Remote)->ResetTo(ToFVector(Packet.position), Packet.yaw);
+        }
+        UE_LOG(LogTemp, Display, TEXT("ASCENSION_NET_TELEPORT id=%u reason=%d pos=(%.0f,%.0f)"), Packet.playerId, int32(Packet.reason), Packet.position.x, Packet.position.y);
+        break;
+    }
+    case Proto::PacketId::S_RiftState:
+    {
+        Proto::S_RiftState Packet;
+        if (!ReadFixed(Bytes, Packet)) break;
+        const uint8 Previous = Rift.bValid ? Rift.Phase : 0;
+        Rift.bValid = true;
+        Rift.Phase = uint8(Packet.phase);
+        for (int32 I = 0; I < 2; ++I) { Rift.GateTeam[I] = Packet.gateTeam[I]; Rift.Gate[I] = FVector2D(Packet.gateX[I], Packet.gateY[I]); }
+        Rift.GateRadius = Packet.gateRadius;
+        Rift.Arena = FVector2D(Packet.arenaX, Packet.arenaY);
+        Rift.ArenaRadius = Packet.arenaRadius;
+        Rift.PhaseStartMs = Packet.phaseStartServerMs; Rift.PhaseEndMs = Packet.phaseEndServerMs;
+        Rift.ShrinkStartMs = Packet.zoneShrinkStartServerMs; Rift.ShrinkEndMs = Packet.zoneShrinkEndServerMs; Rift.LateMs = Packet.zoneLateServerMs;
+        Rift.DamageEarly = Packet.zoneDamageEarly; Rift.DamageLate = Packet.zoneDamageLate;
+        Rift.BossId = Packet.bossId; Rift.Winner = Packet.winnerTeam; Rift.RewardStats = Packet.rewardStats; Rift.RewardXp = Packet.rewardXp;
+        if (Previous != Rift.Phase)
+        {
+            if (Rift.Phase == uint8(Proto::RiftPhase::Closed)) bInRift = false;
+            ACLHero* Hero = LocalHero();
+            const TCHAR* Text = nullptr;
+            switch (Proto::RiftPhase(Rift.Phase))
+            {
+            case Proto::RiftPhase::Open: Text = TEXT("균열이 열렸습니다! 중앙 광장 보라색 입구에 1초 서 있으면 들어갑니다"); break;
+            case Proto::RiftPhase::Waiting: Text = TEXT("한 팀이 균열에 들어갔습니다. 다른 입구로 도전할 수 있습니다"); break;
+            case Proto::RiftPhase::Pvp: Text = TEXT("균열 대결 시작! 상대 팀을 전멸시키세요"); break;
+            case Proto::RiftPhase::Boss: Text = TEXT("상대가 오지 않아 균열 보스가 나타났습니다"); break;
+            default: break;
+            }
+            if (Rift.Phase == uint8(Proto::RiftPhase::Finished))
+                Text = Rift.Winner == MyTeam ? TEXT("균열 승리! 경험치와 스탯 포인트 +3") : Rift.Winner ? TEXT("균열 대결이 끝났습니다") : TEXT("균열이 보상 없이 끝났습니다");
+            if (Hero && Text) Hero->Notice = Text;
+            UE_LOG(LogTemp, Display, TEXT("ASCENSION_NET_RIFT phase=%d gates=%d,%d boss=%u winner=%d"), int32(Rift.Phase), int32(Rift.GateTeam[0]), int32(Rift.GateTeam[1]),
+                   uint32(Rift.BossId), int32(Rift.Winner));
+        }
+        break;
+    }
+    case Proto::PacketId::S_Loadout:
+    {
+        Proto::S_Loadout Packet;
+        if (!ReadFixed(Bytes, Packet) || Packet.playerId != MyId) break;
+        ACLHero* Hero = LocalHero();
+        if (!Hero || !Hero->Skills) break;
+        uint8 Numbers[4], Ranks[4], Awakened[4];
+        uint16 Stats[4];
+        for (int32 I = 0; I < 4; ++I) { Numbers[I] = Packet.slots[I].skillNumber; Ranks[I] = Packet.slots[I].rank; Awakened[I] = Packet.slots[I].awakened; Stats[I] = Packet.stats[I]; }
+        Hero->Skills->Level = MyProgress.bValid ? MyProgress.Level : 1;
+        Hero->Skills->SetLoadout(Numbers, Ranks, Awakened, Stats, Packet.skillPointsLeft, Packet.awakeningPointsLeft, Packet.statPointsLeft);
+        if (Packet.result != Proto::LoadoutResult::Ok)
+        {
+            const TCHAR* Why = Packet.result == Proto::LoadoutResult::NoPoints ? TEXT("포인트 부족") : Packet.result == Proto::LoadoutResult::SlotsFull ? TEXT("스킬 칸이 가득 참")
+                             : Packet.result == Proto::LoadoutResult::Locked ? TEXT("해금 조건 부족") : Packet.result == Proto::LoadoutResult::InCombat ? TEXT("전투 중에는 지울 수 없음")
+                             : Packet.result == Proto::LoadoutResult::MaxRank ? TEXT("최대 단계") : Packet.result == Proto::LoadoutResult::NotNow ? TEXT("지금은 할 수 없음") : TEXT("서버가 거부함");
+            Hero->Skills->LastMessage = FString::Printf(TEXT("서버: %s"), Why);
+            Hero->Skills->LastMessageUntil = GetWorld()->GetTimeSeconds() + 2;
+        }
+        UE_LOG(LogTemp, Display, TEXT("ASCENSION_NET_LOADOUT result=%d action=%d skill=%d slots=%d,%d,%d,%d stats=%d,%d,%d,%d left=%d/%d/%d"), int32(Packet.result), int32(Packet.action),
+               int32(Packet.skillNumber), int32(Numbers[0]), int32(Numbers[1]), int32(Numbers[2]), int32(Numbers[3]), int32(Stats[0]), int32(Stats[1]), int32(Stats[2]), int32(Stats[3]),
+               int32(Packet.skillPointsLeft), int32(Packet.statPointsLeft), int32(Packet.awakeningPointsLeft));
+        break;
+    }
     default:
         UE_LOG(LogTemp, Warning, TEXT("ASCENSION_NET_UNKNOWN_PACKET id=%d"), int32(Header.id));
         break;
+    }
+}
+
+void ACLNetSession::BindSkillCommands()
+{
+    ACLHero* Hero = LocalHero();
+    if (!Hero || !Hero->Skills) return;
+    TWeakObjectPtr<ACLNetSession> Self(this);
+    Hero->Skills->SendSkillCommand = [Self](uint8 Action, uint8 Number) { if (Self.IsValid()) Self->SendSkillCommand(Action, Number); };
+    Hero->Skills->SendStatCommand = [Self](uint8 Stat, uint8 Amount) { if (Self.IsValid()) Self->SendStatCommand(Stat, Amount); };
+}
+
+void ACLNetSession::SendSkillCommand(uint8 Action, uint8 Number)
+{
+    if (State != EState::InRoom) return;
+    Proto::C_SkillCommand Packet = Proto::Make<Proto::C_SkillCommand>();
+    Packet.action = Proto::SkillAction(Action);
+    Packet.skillNumber = Number;
+    SendPacket(Packet);
+}
+
+void ACLNetSession::SendStatCommand(uint8 Stat, uint8 Amount)
+{
+    if (State != EState::InRoom) return;
+    Proto::C_StatCommand Packet = Proto::Make<Proto::C_StatCommand>();
+    Packet.stat = Stat;
+    Packet.amount = Amount;
+    SendPacket(Packet);
+}
+
+float ACLNetSession::RiftZoneRadiusNow() const
+{
+    if (Rift.Phase != uint8(Proto::RiftPhase::Pvp) || !Rift.ShrinkStartMs) return Rift.ArenaRadius;
+    const double Into = -SecondsUntil(Rift.ShrinkStartMs), Length = FMath::Max(.001, (double(Rift.ShrinkEndMs) - double(Rift.ShrinkStartMs)) / 1000.0);
+    return Rift.ArenaRadius * float(1.0 - FMath::Clamp(Into / Length, 0.0, 1.0));
+}
+
+bool ACLNetSession::RiftGateOpenFor(int32 Gate, uint8 Team) const
+{
+    const uint8 GateOwner = Rift.GateTeam[Gate], Other = Rift.GateTeam[1 - Gate];
+    switch (Proto::RiftPhase(Rift.Phase))
+    {
+    case Proto::RiftPhase::Open: return GateOwner == 0;
+    case Proto::RiftPhase::Waiting: return GateOwner == Team || (GateOwner == 0 && Other != Team);
+    case Proto::RiftPhase::Pvp: return GateOwner == Team && SecondsUntil(Rift.PhaseStartMs) > -10.0; // 시작 뒤 잠시 팀원 합류(정확한 시간은 서버가 판단)
+    default: return false;
+    }
+}
+
+FString ACLNetSession::RiftText() const
+{
+    if (!InMatch() || !Rift.bValid) return FString();
+    const auto Clock = [this](uint32 Ms) { const int32 L = FMath::Max(0, FMath::CeilToInt(SecondsUntil(Ms))); return FString::Printf(TEXT("%d:%02d"), L / 60, L % 60); };
+    switch (Proto::RiftPhase(Rift.Phase))
+    {
+    case Proto::RiftPhase::Open: return TEXT("균열 열림 · 중앙 광장 입구 2곳 (입구 하나에 한 팀)");
+    case Proto::RiftPhase::Waiting:
+        return FString::Printf(TEXT("균열: 팀 %d 입장, 상대 대기 %s · 안 오면 보스전"), FMath::Max(Rift.GateTeam[0], Rift.GateTeam[1]), *Clock(Rift.PhaseEndMs));
+    case Proto::RiftPhase::Pvp:
+    {
+        const bool bLate = Rift.LateMs && SecondsUntil(Rift.LateMs) <= 0, bShrink = Rift.ShrinkStartMs && SecondsUntil(Rift.ShrinkStartMs) <= 0;
+        return FString::Printf(TEXT("균열 대결: 팀 %d 대 팀 %d · %s · 전투장 자기장 %s"), Rift.GateTeam[0], Rift.GateTeam[1], *Clock(Rift.PhaseEndMs),
+                               bShrink ? *FString::Printf(TEXT("%.0fm (초당 %.0f%%)"), RiftZoneRadiusNow() / 100.f, bLate ? Rift.DamageLate : Rift.DamageEarly)
+                                       : *FString::Printf(TEXT("%s 뒤 축소"), *Clock(Rift.ShrinkStartMs)));
+    }
+    case Proto::RiftPhase::Boss: return FString::Printf(TEXT("균열 보스전: 팀 %d · 남은 시간 %s"), FMath::Max(Rift.GateTeam[0], Rift.GateTeam[1]), *Clock(Rift.PhaseEndMs));
+    case Proto::RiftPhase::Finished:
+        return Rift.Winner ? FString::Printf(TEXT("균열 결과: 팀 %d 승리 (경험치 %u · 스탯 +%d)"), Rift.Winner, Rift.RewardXp, Rift.RewardStats) : FString(TEXT("균열 결과: 보상 없음"));
+    default: return FString();
+    }
+}
+
+void ACLNetSession::DrawRift() const
+{
+    if (!InMatch() || !Rift.bValid) return;
+    UWorld* World = GetWorld();
+    const double T = World->GetTimeSeconds();
+    const bool bGatesOpen = Rift.Phase == uint8(Proto::RiftPhase::Open) || Rift.Phase == uint8(Proto::RiftPhase::Waiting) || Rift.Phase == uint8(Proto::RiftPhase::Pvp);
+    if (bGatesOpen)
+        for (int32 I = 0; I < 2; ++I)
+        {
+            // 보라색 소용돌이 입구: 들어갈 수 있으면 밝게, 다른 팀이 차지했으면 붉게
+            const bool bMine = RiftGateOpenFor(I, MyTeam);
+            const FColor Color = Rift.GateTeam[I] && Rift.GateTeam[I] != MyTeam ? FColor(200, 60, 80) : bMine ? FColor(190, 90, 255) : FColor(110, 70, 140);
+            const FVector C(Rift.Gate[I].X, Rift.Gate[I].Y, 6);
+            for (int32 Ring = 0; Ring < 3; ++Ring)
+            {
+                const float R = Rift.GateRadius * (.45f + .27f * Ring) + 10.f * FMath::Sin(float(T * 3 + Ring));
+                DrawDebugCircle(World, C, R, 40, Color, false, -1, 0, 4 - Ring, FVector(1, 0, 0), FVector(0, 1, 0), false);
+            }
+            for (int32 K = 0; K < 6; ++K)
+            {
+                const float A = float(T * 1.7) + K * PI / 3;
+                const FVector Base = C + FVector(FMath::Cos(A), FMath::Sin(A), 0) * Rift.GateRadius * .8f;
+                DrawDebugLine(World, Base, Base + FVector(0, 0, 220 + 40 * FMath::Sin(float(T * 2 + K))), Color, false, -1, 0, 3);
+            }
+            const FString Label = Rift.GateTeam[I] ? FString::Printf(TEXT("균열 입구 %d · 팀 %d"), I + 1, Rift.GateTeam[I]) : FString::Printf(TEXT("균열 입구 %d"), I + 1);
+            DrawDebugString(World, C + FVector(0, 0, 280), Label, nullptr, Color, 0.f, true, 1.3f);
+        }
+    if (Rift.Phase == uint8(Proto::RiftPhase::Pvp))
+    {
+        const FVector C(Rift.Arena.X, Rift.Arena.Y, 12);
+        DrawDebugCircle(World, C, FMath::Max(RiftZoneRadiusNow(), 20.f), 96, FColor(200, 80, 255), false, -1, 0, 10, FVector(1, 0, 0), FVector(0, 1, 0), false);
     }
 }
 
@@ -715,6 +918,7 @@ void ACLNetSession::TickPrediction()
             Direction = FVector(FMath::Cos(T * .8), FMath::Sin(T * .8), 0);
             if (P.Sequence % 150 == 75) Hero->Dodge(); // SendDodge가 회피 입력을 예약한다
         }
+        if (!AutoHuntMove.IsNearlyZero()) Direction = AutoHuntMove; // -AscensionNetAutoHunt: 캠프까지 걸어간다
         AscMove::Input Input;
         Input.moveX = float(Direction.X);
         Input.moveY = float(Direction.Y);
@@ -849,6 +1053,26 @@ void ACLNetSession::TickMonsters(double RenderTime, float Delta)
 // 시험 옵션 -AscensionNetAutoHunt: 가장 가까운 몬스터를 향해 0.8초마다 실제 공격 입력을 내고, 죽으면 1초 뒤 다시 시작한다.
 void ACLNetSession::TickAutoHunt(double Now)
 {
+    // 시험 옵션 -AscensionNetAutoLearn: 포인트가 생기면 서버에 배우기·강화·스탯 분배를 보낸다(포인트 쓰기 접속 시험)
+    static const bool bAutoLearn = FParse::Param(FCommandLine::Get(), TEXT("AscensionNetAutoLearn"));
+    if (bAutoLearn && Now >= NextAutoLearn && State == EState::InRoom)
+        if (ACLHero* Hero = LocalHero(); Hero && Hero->Skills && Hero->HP > 0)
+        {
+            NextAutoLearn = Now + 1.0;
+            UCLSkillComponent* S = Hero->Skills;
+            if (S->StatPointsLeft > 0) S->RequestStat(ECLStat::Strength, 1);
+            else if (S->SkillPointsLeft > 0)
+            {
+                using A = UCLSkillComponent::EAction;
+                const FCLSkillDef* Pick = nullptr; A Act = A::Learn;
+                for (const FCLSkillDef& Def : UCLSkillComponent::AllSkills())
+                {
+                    if (S->CheckAction(A::Learn, Def).IsEmpty()) { Pick = &Def; Act = A::Learn; break; }
+                    if (S->CheckAction(A::Upgrade, Def).IsEmpty() && !Pick) { Pick = &Def; Act = A::Upgrade; }
+                }
+                if (Pick) S->RequestSkill(Act, *Pick);
+            }
+        }
     static const bool bAutoHunt = FParse::Param(FCommandLine::Get(), TEXT("AscensionNetAutoHunt"));
     ACLHero* Hero = LocalHero();
     if (!bAutoHunt || !Hero) return;
@@ -864,18 +1088,22 @@ void ACLNetSession::TickAutoHunt(double Now)
     }
     DeadSince = 0;
     if (Now < NextAutoHunt) return;
-    NextAutoHunt = Now + .8;
+    NextAutoHunt = Now + .3;
+    // 가장 가까운 몬스터. 캠프 몬스터는 먼저 오지 않으므로 6m 밖이면 그쪽으로 걸어간다(TickPrediction이 AutoHuntMove를 쓴다).
     const ACLEnemy* Nearest = nullptr;
-    double Best = 1300;
+    double Best = 1e9;
     for (const auto& Pair : Monsters)
     {
         if (!IsValid(Pair.Value)) continue;
         const double Distance = FVector::Dist2D(Pair.Value->GetActorLocation(), Hero->GetActorLocation());
         if (Distance < Best) Best = Distance, Nearest = Pair.Value;
     }
+    AutoHuntMove = FVector::ZeroVector;
     if (!Nearest || !Hero->GetController()) return;
-    Hero->GetController()->SetControlRotation(FRotator(-30, (Nearest->GetActorLocation() - Hero->GetActorLocation()).Rotation().Yaw, 0));
-    Hero->Attack();
+    const FVector To = (Nearest->GetActorLocation() - Hero->GetActorLocation()).GetSafeNormal2D();
+    if (Best > 600) AutoHuntMove = To;
+    Hero->GetController()->SetControlRotation(FRotator(-30, To.Rotation().Yaw, 0));
+    if (Best <= 1300) Hero->Attack();
 }
 
 void ACLNetSession::SendAttack(float Yaw)
