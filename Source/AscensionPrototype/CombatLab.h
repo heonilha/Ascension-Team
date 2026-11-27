@@ -134,6 +134,8 @@ public:
     // 스킬 창(K): 스킬 배우기·강화·각성·지우기와 스탯 분배. 그리기와 클릭은 ACLHUD(CLHud.cpp)
     bool bSkillWindowOpen = false;
     void ToggleSkillWindow();
+    bool bWorldMapOpen = false; // M: 필드 전체 지도
+    void ToggleWorldMap() { bWorldMapOpen = !bWorldMapOpen; }
     void SetSkillWindowOpen(bool bOpen);
 private:
     friend class AAscensionMode;
@@ -259,8 +261,8 @@ public:
     double SurvivalStart = 0, ReinforcementReady = 0, EliteReady = 0;
     float SurvivalElapsed() const;
     // 배틀로얄 필드 100m × 100m(서버 room_layout.rs ARENA_HALF_*와 같다)
-    static constexpr float ArenaHalfWidth = 5000.f;
-    static constexpr float ArenaHalfDepth = 5000.f;
+    static constexpr float ArenaHalfWidth = 25000.f;
+    static constexpr float ArenaHalfDepth = 25000.f;
     static constexpr int32 MaxSurvivalEnemies = 48;
     double RefillReady = 0;
     void ResetSurvival();
@@ -295,6 +297,9 @@ private:
     void DrawSkillBar(ACLHero* P);
     void DrawMatchPanel(ACLHero* P, ACLNetSession* Net);
     void DrawMinimap(ACLHero* P, ACLNetSession* Net);
+    void DrawMapView(ACLHero* P, ACLNetSession* Net, float X, float Y, float Size, const FVector2D& Center, float Half, bool bArena, bool bFull);
+    void DrawZoneStatus(ACLHero* P, ACLNetSession* Net, float X, float Y, float W);
+    void DrawZoneOverlay(ACLHero* P, ACLNetSession* Net);
     // 그리기 도우미
     float UI = 1;                   // 화면 크기 배율(720p = 1)
     float MouseX = -1, MouseY = -1; // 이번 프레임의 마우스 위치

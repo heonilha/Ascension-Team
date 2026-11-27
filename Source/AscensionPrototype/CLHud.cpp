@@ -151,6 +151,7 @@ void ACLHUD::DrawBattleHud(ACLHero* P, AAscensionMode* Mode)
     ACLNetSession* Net = Mode && IsValid(Mode->Net) ? Mode->Net.Get() : nullptr;
     DrawVitals(P, Net);
     DrawSkillBar(P);
+    DrawZoneOverlay(P, Net);
     DrawMatchPanel(P, Net);
     DrawMinimap(P, Net);
 }
@@ -300,18 +301,48 @@ void ACLHUD::DrawMatchPanel(ACLHero* P, ACLNetSession* Net)
 
 void ACLHUD::DrawMinimap(ACLHero* P, ACLNetSession* Net)
 {
+    // 오른쪽 위: 내 주변 120m를 확대한 지도. M을 누르면 필드 전체 지도를 화면 가운데에 크게 연다.
     const float Size = 210 * UI, X = Canvas->SizeX - Size - 14 * UI, Y = 12 * UI;
     const bool bArena = Net && Net->bInRift && Net->Rift.bValid;
-    const FVector2D Center = bArena ? Net->Rift.Arena : FVector2D::ZeroVector;
-    const float Half = bArena ? Net->Rift.ArenaRadius * 1.15f : FCLField::HalfSize;
+    const FVector2D Center = bArena ? Net->Rift.Arena : FVector2D(P->GetActorLocation());
+    const float Half = bArena ? Net->Rift.ArenaRadius * 1.15f : 6000.f;
     Panel(X - 4 * UI, Y - 4 * UI, Size + 8 * UI, Size + 24 * UI, BgPanel, Edge);
+    DrawMapView(P, Net, X, Y, Size, Center, Half, bArena, false);
+    Text(bArena ? TEXT("균열 전투장") : TEXT("주변 120m · M 전체 지도"), X + 4 * UI, Y + Size + 2 * UI, TextDim, .72f);
+    if (Net && Net->InMatch()) Text(FString::Printf(TEXT("팀 %d"), Net->MyTeam), X + Size - 4 * UI, Y + Size + 2 * UI, TeamColor(Net->MyTeam), .72f, 2);
+    DrawZoneStatus(P, Net, X - 4 * UI, Y + Size + 26 * UI, Size + 8 * UI);
+    if (P->bWorldMapOpen && !bArena)
+    {
+        const float Big = FMath::Min(Canvas->SizeY - 120 * UI, Canvas->SizeX - 120 * UI), BX = (Canvas->SizeX - Big) * .5f, BY = (Canvas->SizeY - Big) * .5f;
+        DrawRect(FLinearColor(0, 0, 0, .45f), 0, 0, Canvas->SizeX, Canvas->SizeY);
+        Panel(BX - 6 * UI, BY - 30 * UI, Big + 12 * UI, Big + 58 * UI, BgPanel, Edge);
+        Text(TEXT("필드 500m × 500m"), BX, BY - 25 * UI, TextMain, 1.05f);
+        Text(TEXT("M 닫기"), BX + Big, BY - 23 * UI, TextDim, .8f, 2);
+        DrawMapView(P, Net, BX, BY, Big, FVector2D::ZeroVector, FCLField::HalfSize * 1.02f, false, true);
+        // 범례
+        const struct { const TCHAR* Name; FLinearColor Color; } Legend[] = {
+            {TEXT("지금 자기장"), FLinearColor(.35f, .6f, 1.f)}, {TEXT("다음 자기장"), FLinearColor(1, 1, 1, .9f)}, {TEXT("캠프"), FLinearColor(.75f, .5f, .3f)},
+            {TEXT("정예 캠프"), Gold}, {TEXT("풀숲"), FLinearColor(.18f, .5f, .2f)}, {TEXT("균열 입구"), FLinearColor(.8f, .4f, 1.f)}};
+        float LX = BX;
+        for (const auto& L : Legend)
+        {
+            DrawRect(L.Color, LX, BY + Big + 9 * UI, 10 * UI, 10 * UI);
+            Text(L.Name, LX + 14 * UI, BY + Big + 5 * UI, TextDim, .78f);
+            LX += TextWidth(L.Name, .78f) + 34 * UI;
+        }
+    }
+}
+
+void ACLHUD::DrawMapView(ACLHero* P, ACLNetSession* Net, float X, float Y, float Size, const FVector2D& Center, float Half, bool bArena, bool bFull)
+{
     DrawRect(FLinearColor(.06f, .1f, .07f, .95f), X, Y, Size, Size);
     // 월드 X(앞) → 화면 위, 월드 Y(오른쪽) → 화면 오른쪽
     const auto Map = [&](const FVector2D& W) { return FVector2D(X + (W.Y - Center.Y + Half) / (2 * Half) * Size, Y + (Half - (W.X - Center.X)) / (2 * Half) * Size); };
     const auto Inside = [&](const FVector2D& M) { return M.X >= X && M.X <= X + Size && M.Y >= Y && M.Y <= Y + Size; };
     const auto Circle = [&](const FVector2D& W, float R, const FLinearColor& C, float Thick)
     {
-        const int32 N = 48; FVector2D Last = Map(W + FVector2D(R, 0));
+        // 지도 밖으로 나가는 부분은 그리지 않는다(확대 지도에서는 원의 일부만 보인다)
+        const int32 N = bFull ? 128 : 160; FVector2D Last = Map(W + FVector2D(R, 0));
         for (int32 I = 1; I <= N; ++I)
         {
             const float A = I * 2 * PI / N; const FVector2D Next = Map(W + FVector2D(FMath::Cos(A), FMath::Sin(A)) * R);
@@ -320,23 +351,35 @@ void ACLHUD::DrawMinimap(ACLHero* P, ACLNetSession* Net)
         }
     };
     const auto Dot = [&](const FVector2D& W, float R, const FLinearColor& C) { const FVector2D M = Map(W); if (Inside(M)) DrawRect(C, M.X - R, M.Y - R, 2 * R, 2 * R); };
+    const float Scale = Size / (2 * Half); // 화면 픽셀 / cm
     if (!bArena)
     {
+        // 필드 경계
+        const float F = FCLField::HalfSize;
+        const FVector2D Corners[] = {{F, -F}, {F, F}, {-F, F}, {-F, -F}};
+        for (int32 I = 0; I < 4; ++I)
+        {
+            const FVector2D A = Map(Corners[I]), B = Map(Corners[(I + 1) % 4]);
+            if (Inside(A) && Inside(B)) DrawLine(A.X, A.Y, B.X, B.Y, FLinearColor(.5f, .45f, .35f, .8f), 1.5f * UI);
+        }
         for (const FCLFieldArea& A : FCLField::Get().Areas)
         {
-            if (A.Kind == TEXT("bush")) Dot(A.Center, FMath::Max(2.f, A.Radius / Half * Size * .5f), FLinearColor(.18f, .5f, .2f, .9f));
-            else if (A.Kind.StartsWith(TEXT("camp"))) Dot(A.Center, 3 * UI, A.Kind == TEXT("camp_elite") ? Gold : FLinearColor(.75f, .5f, .3f));
+            if (A.Kind == TEXT("bush")) Dot(A.Center, FMath::Max(1.5f * UI, A.Radius * Scale), FLinearColor(.18f, .5f, .2f, .9f));
+            else if (A.Kind.StartsWith(TEXT("camp"))) Dot(A.Center, FMath::Max(2.5f * UI, A.Radius * Scale), A.Kind == TEXT("camp_elite") ? Gold : FLinearColor(.75f, .5f, .3f));
         }
         for (int32 Team = 1; Team <= 4; ++Team)
         {
             const FLinearColor C = TeamColor(Team);
             Dot(FCLField::TeamBase(Team), (Net && Team == Net->MyTeam ? 6.f : 4.f) * UI, C);
+            if (bFull) { const FVector2D M = Map(FCLField::TeamBase(Team)); Text(FString::Printf(TEXT("팀 %d"), Team), M.X, M.Y + 7 * UI, C, .75f, 1); }
         }
         if (Net && Net->Rift.bValid && Net->Rift.Phase >= 1 && Net->Rift.Phase <= 3)
             for (int32 I = 0; I < 2; ++I) Dot(Net->Rift.Gate[I], 4 * UI, FLinearColor(.8f, .4f, 1.f));
         if (Net && Net->InMatch())
         {
-            Circle(Net->ZoneCenter(), Net->ZoneRadiusNow(), FLinearColor(.35f, .6f, 1.f), 2 * UI);
+            const float Now = Net->ZoneRadiusNow(), Next = Net->ZoneNextRadius();
+            if (Next < Now - 1) Circle(Net->ZoneCenter(), Next, FLinearColor(1, 1, 1, .85f), 1.5f * UI);
+            Circle(Net->ZoneCenter(), Now, FLinearColor(.35f, .6f, 1.f), 2.5f * UI);
         }
     }
     else
@@ -356,12 +399,56 @@ void ACLHUD::DrawMinimap(ACLHero* P, ACLNetSession* Net)
         }
     // 나: 바라보는 방향 표시
     const FVector2D Me = Map(FVector2D(P->GetActorLocation()));
+    if (!Inside(Me)) return;
     const float Yaw = FMath::DegreesToRadians(P->GetControlRotation().Yaw);
     const FVector2D Dir(FMath::Sin(Yaw), -FMath::Cos(Yaw));
     DrawLine(Me.X, Me.Y, Me.X + Dir.X * 11 * UI, Me.Y + Dir.Y * 11 * UI, FLinearColor::White, 2 * UI);
     DrawRect(FLinearColor::White, Me.X - 3 * UI, Me.Y - 3 * UI, 6 * UI, 6 * UI);
-    Text(bArena ? TEXT("균열 전투장") : TEXT("필드 100m"), X + 4 * UI, Y + Size + 2 * UI, TextDim, .72f);
-    if (Net && Net->InMatch()) Text(FString::Printf(TEXT("팀 %d"), Net->MyTeam), X + Size - 4 * UI, Y + Size + 2 * UI, TeamColor(Net->MyTeam), .72f, 2);
+}
+
+void ACLHUD::DrawZoneStatus(ACLHero* P, ACLNetSession* Net, float X, float Y, float W)
+{
+    // 미니맵 아래: 자기장 반지름, 다음 축소까지 남은 시간, 밖 피해, 안쪽까지 거리
+    if (!Net || !Net->InMatch() || Net->bInRift) return;
+    const uint8 Phase = Net->MatchPhaseRaw();
+    if (Phase != 2 && Phase != 3) return; // MatchPhase::Round, Shrink
+    const int32 Left = FMath::CeilToInt(Net->ZonePhaseSecondsLeft());
+    const FString Time = FString::Printf(TEXT("%d:%02d"), Left / 60, Left % 60);
+    const bool bShrinking = Net->ZoneShrinking();
+    const float Now = Net->ZoneRadiusNow(), Next = Net->ZoneNextRadius();
+    const FString Head = bShrinking ? FString::Printf(TEXT("자기장 축소 중  %s"), *Time) : FString::Printf(TEXT("자기장 축소까지  %s"), *Time);
+    const FString Size = Next < Now - 1 ? FString::Printf(TEXT("%.0fm → %.0fm  ·  밖 초당 %.0f%%"), Now / 100, Next / 100, Net->ZoneDamagePercent())
+                                         : FString::Printf(TEXT("%.0fm  ·  밖 초당 %.0f%%"), Now / 100, Net->ZoneDamagePercent());
+    const float Dist = FVector2D::Distance(FVector2D(P->GetActorLocation()), Net->ZoneCenter());
+    const bool bOutside = Dist > Now;
+    FString Foot;
+    if (bOutside) Foot = FString::Printf(TEXT("자기장 밖 · 안쪽까지 %.0fm"), (Dist - Now) / 100);
+    else if (Dist > Next && Next < Now - 1) Foot = FString::Printf(TEXT("다음 자기장 밖 · 안쪽까지 %.0fm"), (Dist - Next) / 100);
+    const float H = (Foot.IsEmpty() ? 42 : 60) * UI;
+    const FLinearColor Blue(.35f, .6f, 1.f);
+    Panel(X, Y, W, H, BgPanel, bOutside ? Bad : bShrinking ? Blue : Edge);
+    Text(Head, X + 8 * UI, Y + 4 * UI, bShrinking ? FLinearColor(.6f, .8f, 1.f) : TextMain, .9f);
+    Text(Size, X + 8 * UI, Y + 23 * UI, TextDim, .78f);
+    if (!Foot.IsEmpty()) Text(Foot, X + 8 * UI, Y + 41 * UI, bOutside ? Bad : Gold, .78f);
+}
+
+void ACLHUD::DrawZoneOverlay(ACLHero* P, ACLNetSession* Net)
+{
+    // 자기장 밖: 화면 가장자리를 파랗게 물들이고 깜박인다(피해는 서버가 준다)
+    if (!Net || Net->bInRift || P->HP <= 0 || !Net->IsOutsideZone(P->GetActorLocation()) || Net->ZoneDamagePercent() <= 0) return;
+    const float Pulse = .55f + .45f * FMath::Sin(float(GetWorld()->GetTimeSeconds() * 5));
+    const float SX = Canvas->SizeX, SY = Canvas->SizeY, Band = SY * .16f;
+    DrawRect(FLinearColor(.1f, .3f, .9f, .10f), 0, 0, SX, SY);
+    for (int32 I = 0; I < 8; ++I)
+    {
+        // 가장자리에서 안쪽으로 옅어지는 띠
+        const float A = (.22f - I * .025f) * Pulse, D = Band * I / 8, T = Band / 8;
+        const FLinearColor C(.15f, .4f, 1.f, A);
+        DrawRect(C, 0, D, SX, T);
+        DrawRect(C, 0, SY - D - T, SX, T);
+        DrawRect(C, D, 0, T, SY);
+        DrawRect(C, SX - D - T, 0, T, SY);
+    }
 }
 
 // ---- 스킬 창 ----

@@ -17,7 +17,7 @@ struct FCLField
     static const FCLField& Get(); // 처음 부를 때 한 번 읽는다
     // 그 자리를 덮는 풀숲 번호(-1 = 없음)
     int32 BushAt(const FVector& Position) const;
-    // 팀 기지(서버 room_layout.rs: 대각선 네 방향, 중심에서 40m)
+    // 팀 기지(서버 room_layout.rs: 대각선 네 방향, 중심에서 160m)
     static FVector2D TeamBase(int32 Team);
-    static constexpr float HalfSize = 5000.f; // 필드 반폭
+    static constexpr float HalfSize = 25000.f; // 필드 반폭
 };

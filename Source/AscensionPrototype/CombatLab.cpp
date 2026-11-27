@@ -1,6 +1,7 @@
 #include "CombatLab.h"
 #include "HeroMotion.h"
 #include "CLNetSession.h"
+#include "CLZone.h"
 #include "CLCollisionVerify.h"
 #include "CLSkillComponent.h"
 #include "CLSkillVerify.h"
@@ -178,6 +179,29 @@ void ACLHero::BeginPlay()
                 if(APlayerController* PC=Cast<APlayerController>(Controller)) if(ACLHUD* Hud=Cast<ACLHUD>(PC->GetHUD())) Hud->SelectedSkill=UCLSkillComponent::FindSkill(FName(*Pick));
         }),1.f,false);
     }
+    //   -AscensionWorldMap         전체 지도(M)를 연 채로 시작한다
+    //   -AscensionLookYaw=도       시점 방향(월드 yaw). 자기장 벽 쪽을 찍을 때 쓴다
+    bWorldMapOpen=FParse::Param(FCommandLine::Get(),TEXT("AscensionWorldMap"));
+    float LookYaw=0;
+    if(FParse::Value(FCommandLine::Get(),TEXT("AscensionLookYaw="),LookYaw))
+    {
+        FTimerHandle Look; GetWorldTimerManager().SetTimer(Look,FTimerDelegate::CreateWeakLambda(this,[this,LookYaw]
+        { if(Controller) Controller->SetControlRotation(FRotator(-18,LookYaw,0)); }),2.f,true);
+    }
+    //   -AscensionZoneView         오프라인에서 자기장 벽(앞 20m)과 다음 자리 띠(뒤 10m)를 세워 본다(표시 확인용)
+    if(FParse::Param(FCommandLine::Get(),TEXT("AscensionZoneView")))
+    {
+        FTimerHandle View; GetWorldTimerManager().SetTimer(View,FTimerDelegate::CreateWeakLambda(this,[this]
+        {
+            const FVector2D At(GetActorLocation());
+            ACLZone* Zone=GetWorld()->SpawnActor<ACLZone>(FVector::ZeroVector,FRotator::ZeroRotator);
+            if(!Zone) return;
+            const FVector2D Center=At-FVector2D(1,0)*6000; // 중심을 뒤쪽 60m에: 벽은 앞(+X) 쪽 20m 근처를 지난다
+            Zone->Show(Center,8000,5000,true);
+            Zone->LogState();
+            if(Controller) Controller->SetControlRotation(FRotator(-15,0,0));
+        }),1.f,false);
+    }
     FString Shot;
     if(FParse::Value(FCommandLine::Get(),TEXT("AscensionShot="),Shot))
     {
@@ -208,6 +232,7 @@ void ACLHero::SetupPlayerInputComponent(UInputComponent* Input)
     Input->BindAction("SkillSlot3",IE_Pressed,this,&ACLHero::SkillSlot3); Input->BindAction("SkillSlot4",IE_Pressed,this,&ACLHero::SkillSlot4);
     Input->BindAction("SwapWeapon",IE_Pressed,this,&ACLHero::SwapWeapon);
     Input->BindAction("SkillWindow",IE_Pressed,this,&ACLHero::ToggleSkillWindow).bExecuteWhenPaused=true;
+    Input->BindAction("WorldMap",IE_Pressed,this,&ACLHero::ToggleWorldMap);
 }
 void ACLHero::ToggleSkillWindow() { SetSkillWindowOpen(!bSkillWindowOpen); }
 void ACLHero::SetSkillWindowOpen(bool bOpen)
@@ -834,7 +859,9 @@ void ACLEnemy::UpdatePuppet(double RenderTime,float Delta)
     if(T<DamageTextUntil) DrawDebugString(GetWorld(),DamageTextOrigin+FVector(0,0,130+(1-(DamageTextUntil-T)/.65)*65),FString::Printf(TEXT("-%.0f"),LastDamage),nullptr,FColor(255,220,100),0,true,1.3f);
     const FColor C=Kind==2?FColor::Purple:Kind==1?FColor::Orange:FColor::Red;
     const ACLHero* P=Cast<ACLHero>(UGameplayStatics::GetPlayerPawn(this,0));
-    if(Kind==2 || HP<MaxHP || (P && P->Locked==this))
+    // 온라인 필드는 넓어서 이름표를 25m 안에서만 그린다(멀리 있는 캠프의 이름표가 겹쳐 보이지 않게)
+    const bool bNear=P && FVector::DistSquared2D(P->GetActorLocation(),GetActorLocation())<FMath::Square(2500.f);
+    if(bNear && (Kind==2 || HP<MaxHP || P->Locked==this))
         DrawDebugString(GetWorld(),GetActorLocation()+FVector(0,0,Kind==2?150:110),FString::Printf(TEXT("%s %.0f/%.0f"),Kind==2?TEXT("망령 지휘관"):Kind==1?TEXT("폭주 망령"):TEXT("망령 검병"),HP,MaxHP),nullptr,C,0,true);
     if(Phase==1)
     {
@@ -2023,4 +2050,5 @@ void ACLHUD::DrawHUD()
         DrawSkillWindow(P); // 스킬 창(K)은 가장 위에
         DebugTextList.Reset(); // 몬스터 이름표·피해 숫자(디버그 글자)가 창 위에 그려지지 않게 이번 프레임 것을 지운다
     }
+    else if(P->bWorldMapOpen) DebugTextList.Reset(); // 전체 지도(M) 위에도 이름표를 그리지 않는다
 }

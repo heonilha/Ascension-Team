@@ -58,7 +58,7 @@ namespace
 
 bool AscensionVerifyServerCollision(UWorld* World)
 {
-    constexpr double HalfWidth = 5000, HalfDepth = 7600, Grid = 40, EdgeBand = 6;
+    constexpr double HalfWidth = 25000, HalfDepth = 28200, Grid = 40, EdgeBand = 6;
     constexpr double Radius = 32, HalfHeight = 88, CenterZ = 92; // 바닥(z=0)에 선 주인공 캡슐
 
     const FString Path = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir() / TEXT("Data/ServerCollision/CombatLab.txt"));
@@ -86,13 +86,23 @@ bool AscensionVerifyServerCollision(UWorld* World)
     const FCollisionObjectQueryParams Objects(ECC_WorldStatic);
     const FCollisionShape Capsule = FCollisionShape::MakeCapsule(Radius, HalfHeight);
 
+    // 장애물마다 경계 상자(캡슐 반지름 + 여유만큼 넓힘). 상자 밖의 점은 그 장애물과 거리가 충분히 멀다.
+    const double Reach = Radius + EdgeBand + 1;
+    TArray<FBox2D> Boxes;
+    for (const FServerObstacle* O : Relevant) Boxes.Add(FBox2D(O->Polygon).ExpandBy(Reach));
+    TArray<int32> Row;
+
     int32 Points = 0, Blocked = 0, Mismatched = 0, Skipped = 0;
     for (double Y = -HalfDepth + Grid / 2; Y < HalfDepth; Y += Grid)
     {
+        Row.Reset();
+        for (int32 I = 0; I < Boxes.Num(); ++I)
+            if (Y >= Boxes[I].Min.Y && Y <= Boxes[I].Max.Y) Row.Add(I);
         for (double X = -HalfWidth + Grid / 2; X < HalfWidth; X += Grid)
         {
-            double Nearest = TNumericLimits<double>::Max();
-            for (const FServerObstacle* O : Relevant) Nearest = FMath::Min(Nearest, SignedDistance(FVector2D(X, Y), O->Polygon));
+            double Nearest = Reach + Radius; // 가까운 장애물이 없으면 막히지 않음(가장자리 띠 밖)
+            for (int32 I : Row)
+                if (X >= Boxes[I].Min.X && X <= Boxes[I].Max.X) Nearest = FMath::Min(Nearest, SignedDistance(FVector2D(X, Y), Relevant[I]->Polygon));
             Nearest -= Radius;
             if (FMath::Abs(Nearest) < EdgeBand)
             {

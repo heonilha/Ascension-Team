@@ -17,8 +17,8 @@ import os
 import unreal
 
 MAP_PATH = '/Game/Maps/CombatLab'
-# World bounds: the 100 x 100 m field (limits at +-5000) plus the rift arena north of it (centre y 6500, radius 1000).
-HALF_WIDTH, HALF_DEPTH = 5000.0, 7600.0
+# World bounds: the 500 x 500 m field (limits at +-25000) plus the rift arena north of it (centre y 27000, radius 1000).
+HALF_WIDTH, HALF_DEPTH = 25000.0, 28200.0
 STEP_HEIGHT = 45.0           # UCharacterMovementComponent default MaxStepHeight
 ELLIPSE_VERTICES = 24
 

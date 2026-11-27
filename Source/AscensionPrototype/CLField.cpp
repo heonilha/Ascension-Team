@@ -36,5 +36,5 @@ int32 FCLField::BushAt(const FVector& Position) const
 FVector2D FCLField::TeamBase(int32 Team)
 {
     const float Angle = FMath::DegreesToRadians(45.f + 90.f * (FMath::Clamp(Team, 1, 4) - 1));
-    return FVector2D(FMath::Cos(Angle), FMath::Sin(Angle)) * 4000.f;
+    return FVector2D(FMath::Cos(Angle), FMath::Sin(Angle)) * 16000.f;
 }

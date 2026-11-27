@@ -3,6 +3,7 @@
 #include "AscensionProtocol.h"
 #include "AscensionMovement.h"
 #include "CLRemoteHero.h"
+#include "CLZone.h"
 #include "CLSkillComponent.h"
 #include "CombatLab.h"
 
@@ -429,16 +430,24 @@ void ACLNetSession::HandlePacket(const TArray<uint8>& Bytes, double ReceivedAt)
         const double ServerTime = Packet.serverTick * (Proto::kServerTickMs / 1000.0);
         ++MonsterBatches;
         // 서버가 살아 있는 몬스터 전부를 보낸다: 처음 보는 것은 만들고, 목록에서 빠진 것은 지운다.
+        // 500m 필드에는 몬스터가 100마리 넘게 있으므로 내 주변(MonsterViewRadius)의 것만 화면에 만들고,
+        // 한 번에 새로 만드는 수를 나눈다(한 프레임에 수십 마리의 모델을 만들지 않게).
+        if (const ACLHero* Hero = LocalHero()) MonsterViewCenter = FVector2D(Hero->GetActorLocation());
         TSet<uint16> Alive;
+        int32 Spawned = 0;
         for (int32 I = 0; I < Packet.count; ++I)
         {
             const Proto::MonsterEntry Entry = ReadEntry<Proto::MonsterEntry>(Bytes, sizeof(Packet) + I * sizeof(Proto::MonsterEntry));
-            Alive.Add(Entry.id);
             const FVector Position(Entry.x, Entry.y, 82.0); // 몬스터 캡슐 반높이 80
             const float Yaw = Entry.yaw * 360.f / 256.f;
+            const float Distance = FVector2D::Distance(FVector2D(Position), MonsterViewCenter);
             ACLEnemy* Enemy = FindMonster(Entry.id);
+            if (Distance > (Enemy ? MonsterViewRadius + 1500.f : MonsterViewRadius)) continue; // 멀어지면 아래에서 지운다
+            Alive.Add(Entry.id);
             if (!Enemy)
             {
+                if (Spawned >= MonsterSpawnsPerBatch) continue; // 다음 묶음(50ms 뒤)에 만든다
+                ++Spawned;
                 FActorSpawnParameters Params;
                 Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
                 Enemy = GetWorld()->SpawnActor<ACLEnemy>(Position, FRotator(0, Yaw, 0), Params);
@@ -610,6 +619,7 @@ void ACLNetSession::HandlePacket(const TArray<uint8>& Bytes, double ReceivedAt)
         Match.Center = FVector2D(Packet.zoneX, Packet.zoneY);
         Match.RadiusFrom = Packet.zoneRadiusFrom;
         Match.RadiusTo = Packet.zoneRadiusTo;
+        Match.NextRadius = Packet.zoneNextRadius;
         Match.DamagePercent = Packet.zoneDamagePercent;
         if (PreviousPhase != Match.Phase || PreviousRound != Match.Round)
         {
@@ -1241,15 +1251,32 @@ bool ACLNetSession::IsOutsideZone(const FVector& Position) const
     return InMatch() && FVector2D::Distance(FVector2D(Position.X, Position.Y), Match.Center) > ZoneRadiusNow();
 }
 
-void ACLNetSession::DrawZone() const
+void ACLNetSession::DrawZone()
 {
-    if (!InMatch()) return;
-    const float Radius = ZoneRadiusNow();
+    const bool bShow = InMatch() && !bInRift && Match.Phase != uint8(Proto::MatchPhase::Waiting);
+    if (!Zone && bShow)
+    {
+        FActorSpawnParameters Params;
+        Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+        Zone = GetWorld()->SpawnActor<ACLZone>(FVector::ZeroVector, FRotator::ZeroRotator, Params);
+        if (Zone && !Zone->HasMaterials()) UE_LOG(LogTemp, Warning, TEXT("ASCENSION_ZONE 재질(M_ZoneWall·M_ZoneNext)이 없어 선으로 그립니다. CreateMap.py를 다시 실행하세요."));
+    }
+    if (!bShow)
+    {
+        if (Zone) Zone->Show(FVector2D::ZeroVector, 0, 0, false);
+        return;
+    }
+    const float Radius = ZoneRadiusNow(), Next = ZoneNextRadius();
+    if (Zone && Zone->HasMaterials())
+    {
+        Zone->Show(Match.Center, Radius, Next, true);
+        return;
+    }
+    // 재질이 없는 예전 맵: 지금 자기장(파랑)과 다음 자리(흰색)를 선으로
     const FVector Center(Match.Center.X, Match.Center.Y, 15);
-    // 지금 자기장(파랑)과 축소가 끝날 자리(흰색)
-    DrawDebugCircle(GetWorld(), Center, FMath::Max(Radius, 20.f), 128, FColor(60, 140, 255), false, -1, 0, 10, FVector(1, 0, 0), FVector(0, 1, 0), false);
-    if (Match.RadiusTo < Radius - 1)
-        DrawDebugCircle(GetWorld(), Center, FMath::Max(Match.RadiusTo, 20.f), 96, FColor(230, 230, 230), false, -1, 0, 3, FVector(1, 0, 0), FVector(0, 1, 0), false);
+    DrawDebugCircle(GetWorld(), Center, FMath::Max(Radius, 20.f), 256, FColor(60, 140, 255), false, -1, 0, 10, FVector(1, 0, 0), FVector(0, 1, 0), false);
+    if (Next < Radius - 1)
+        DrawDebugCircle(GetWorld(), Center, FMath::Max(Next, 20.f), 192, FColor(230, 230, 230), false, -1, 0, 3, FVector(1, 0, 0), FVector(0, 1, 0), false);
 }
 
 FString ACLNetSession::MatchText() const
@@ -1264,7 +1291,7 @@ FString ACLNetSession::MatchText() const
     case Proto::MatchPhase::Waiting: Phase = TEXT("다른 팀을 기다리는 중"); break;
     case Proto::MatchPhase::Countdown: Phase = FString::Printf(TEXT("시작까지 %s"), *Time); break;
     case Proto::MatchPhase::Round:
-        Phase = Match.Round == 4 ? FString::Printf(TEXT("4라운드 · 자기장 계속 축소 %s"), *Time) : FString::Printf(TEXT("%d라운드 · 남은 시간 %s"), Match.Round, *Time);
+        Phase = Match.Round == 4 ? FString::Printf(TEXT("4라운드 · 자기장 계속 축소 %s"), *Time) : FString::Printf(TEXT("%d라운드 · 자기장 축소까지 %s"), Match.Round, *Time);
         break;
     case Proto::MatchPhase::Shrink: Phase = FString::Printf(TEXT("%d라운드 끝 · 자기장 축소 중 %s"), Match.Round, *Time); break;
     case Proto::MatchPhase::Ended: Phase = Match.Winner ? FString::Printf(TEXT("팀 %d 승리"), Match.Winner) : FString(TEXT("무승부")); break;

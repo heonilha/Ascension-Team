@@ -20,6 +20,7 @@
 class ACLEnemy;
 class ACLHero;
 class ACLRemoteHero;
+class ACLZone;
 class FCLNetReceiver;
 class FRunnableThread;
 struct FCLPrediction;
@@ -44,6 +45,15 @@ public:
     FString MatchText() const;   // 한 줄 요약: 단계·라운드·남은 시간·자기장·남은 팀
     FString MatchBanner() const; // 화면 가운데 큰 글씨: 카운트다운·승리·부활 대기·탈락(없으면 빈 문자열)
     float ZoneRadiusNow() const;
+    // 다음 축소가 끝날 반지름(라운드 중에는 미리 알려 준다). 더 줄지 않으면 ZoneRadiusNow()와 같다
+    float ZoneNextRadius() const { return FMath::Min(Match.NextRadius, ZoneRadiusNow()); }
+    // 자기장이 줄고 있는가(라운드 사이 축소, 4라운드)
+    bool ZoneShrinking() const { return Match.bValid && Match.RadiusTo < Match.RadiusFrom - 1; }
+    // 지금 단계가 끝나는 서버 시각까지 남은 초(라운드 중이면 다음 축소 시작까지)
+    double ZonePhaseSecondsLeft() const { return Match.PhaseEndMs ? FMath::Max(0.0, SecondsUntil(Match.PhaseEndMs)) : 0.0; }
+    float ZoneDamagePercent() const { return Match.DamagePercent; }
+    uint8 MatchPhaseRaw() const { return Match.Phase; }
+    uint8 MatchRound() const { return Match.Round; }
     FVector2D ZoneCenter() const { return Match.Center; }
     bool IsOutsideZone(const FVector& Position) const;
     uint8 MyTeam = 1;
@@ -113,7 +123,7 @@ private:
     ACLEnemy* FindMonster(uint16 Id) const;
     uint32 ServerNowMs() const;
     void SpawnRemote(uint32 Id, const char* Name, const FVector& Position, float Yaw, uint8 Team);
-    void DrawZone() const;
+    void DrawZone();
     void DrawRift() const;
     void BindSkillCommands();
     double SecondsUntil(uint32 ServerMs) const;
@@ -138,8 +148,13 @@ private:
         bool bRespawnAllowed = true;
         uint32 PhaseStartMs = 0, PhaseEndMs = 0;
         FVector2D Center = FVector2D::ZeroVector;
-        float RadiusFrom = 0, RadiusTo = 0, DamagePercent = 0;
+        float RadiusFrom = 0, RadiusTo = 0, NextRadius = 0, DamagePercent = 0;
     } Match;
+    UPROPERTY() TObjectPtr<ACLZone> Zone;
+    // 몬스터는 내 주변 120m 안의 것만 화면에 만든다(500m 필드). 한 묶음에 새로 만드는 수는 12마리까지
+    static constexpr float MonsterViewRadius = 12000.f;
+    static constexpr int32 MonsterSpawnsPerBatch = 12;
+    FVector2D MonsterViewCenter = FVector2D::ZeroVector; // 자기장 벽·다음 자리 띠(처음 매치 상태를 받을 때 만든다)
     uint32 MyRespawnAtMs = 0; // 0 = 부활 대기 아님
     bool bEliminated = false;
     uint8 Capacity = 3;
