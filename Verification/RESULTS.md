@@ -113,3 +113,9 @@ BladeWave.png 실제 렌더링에서 이동 중 청록색 검기와 체력/경�
 - 한계: 렌더링 화면에서 사람이 본 몬스터 움직임·예고 표시·타격감은 확인하지 않았다(화면 없는 실행과 로그로만 확인). 성장·경험치·수문장·Q 스킬은 온라인에 아직 없다. 몬스터 위치는 되감지 않는다. 화면 없는 시험은 -ExecCmds="t.MaxFPS 120"으로 프레임을 제한했다.
 
 2026-11-27 기획 전환 문서 정리: 문서만 변경했으며 빌드·게임 시험은 하지 않았다. 삭제한 두 문서를 가리키는 링크가 남아 있지 않은지 검색으로 확인했다. 새 문서의 상대 링크(11.26기획안.md, 데모_작업분담.md)와 문서에 적은 스크립트 경로(Scripts/ExportServerCollision.py, feature/p1-server-terrain 이후 브랜치에 있음)가 실제로 있는지 확인했다.
+
+2026-11-27 온라인 기반·스킬 공통 틀 검증 (빌드 사본 C:\Users\heonilha\AscBuild\AscensionPrototype, UE 5.8.3):
+- `feature/online-base` 합친 직후 빌드 성공(Result: Succeeded, 기존 double→float 경고만).
+- 스킬 공통 틀 추가 후 빌드 성공. `Scripts/VerifySkills.ps1`(-AscensionSkillVerify, nullrhi) 19항목 PASS: 검 12·활 12 등록, 구현된 스킬 우선 기본 슬롯, 강타 피해 63(공식 일치)·경직 0.5초·마나 10 소모, 동작 중 재시전 차단, 쿨타임 4초 차단, 미구현 스킬 무효, 활 스킬 사용 시 활로 자동 교체, 속사 투사체 1회 명중 47.25 후 소멸, F 교체, 새 생명 초기화, 마나 부족 차단. ASCENSION_SKILL_VERIFY PASS.
+- 기존 회귀: -AscensionVerify(ASCENSION_VERIFY PASS wall_trials=20), -AscensionCombatVerify(PASS), -AscensionSurvivalVerify(PASS), -AscensionBossVerify(PASS). 처음 생존 시험은 -AscensionVerify 없이 실행해 끝나지 않았고, 올바른 옵션으로 다시 실행해 통과했다.
+- 미검증: 실제 키 입력(Z/X/C/V/F)과 스킬 바 HUD의 화면 표시는 렌더링·직접 플레이로 확인하지 않았다. 준비 시간이 있는 스킬의 회피 취소는 구현된 스킬이 없어 시험하지 않았다. 온라인 접속 상태의 스킬 동작은 시험하지 않았다.
