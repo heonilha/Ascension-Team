@@ -1,4 +1,4 @@
-#include "CombatLab.h"
+﻿#include "CombatLab.h"
 #include "HeroMotion.h"
 #include "CLNetSession.h"
 #include "CLZone.h"
@@ -55,8 +55,7 @@ namespace Lab
     {
         return Mesh && Mesh->GetBoneIndex(Epic)!=INDEX_NONE?FName(Epic):FName(Mixamo);
     }
-    // 주인공 모델: Fab 'Man' 캐릭터 03번(UE4 마네킹 스켈레톤). 동작은 대기·달리기만 있고, 공격·강공격·회피 클립은
-    // 믹사모에서 받아 오기 전까지 비워 둔다(비어 있으면 대기·달리기 자세를 유지).
+    // 주인공 모델: Fab 'Man' 캐릭터 03번(UE4 마네킹 스켈레톤).
     const TCHAR* HeroMeshPath=TEXT("/Game/Man/Mesh/Full/SK_Man_Full_03.SK_Man_Full_03");
     bool SetModel(ACharacter* Character,TArray<TObjectPtr<UAnimSequence>>& Clips,bool Monster=false)
     {
@@ -78,10 +77,13 @@ namespace Lab
             UE_LOG(LogTemp,Display,TEXT("ASCENSION_MONSTER_MODEL_LOADED clips=%d/3"),Loaded); return Loaded==3;
         }
         // 순서: 0 대기 1 달리기 2 공격 3 강공격 4 회피 (nullptr = 아직 없음)
-        const TCHAR* Paths[]={TEXT("/Game/Man/Demo/Animations/ThirdPersonIdle.ThirdPersonIdle"),TEXT("/Game/Man/Demo/Animations/ThirdPersonRun.ThirdPersonRun"),nullptr,nullptr,nullptr};
+        // 대기는 캐릭터에 딸린 마네킹 대기, 나머지는 믹사모 동작을 리타깃한 것(Scripts/ImportMixamo.py). 공격과 강공격은 같은 베기 클립을 구간만 달리 쓴다.
+        const TCHAR* Paths[]={TEXT("/Game/Man/Demo/Animations/ThirdPersonIdle.ThirdPersonIdle"),TEXT("/Game/Mixamo/Animation/A_Run.A_Run"),
+            TEXT("/Game/Mixamo/Animation/A_Slash.A_Slash"),TEXT("/Game/Mixamo/Animation/A_Slash.A_Slash"),TEXT("/Game/Mixamo/Animation/A_Roll.A_Roll"),
+            TEXT("/Game/Mixamo/Animation/A_Walk.A_Walk")}; // 5 걷기(느린 이동 섞기용)
         for(const TCHAR* Path:Paths) Clips.Add(Path?LoadObject<UAnimSequence>(nullptr,Path):nullptr);
         int32 Loaded=0; for(const auto& Clip:Clips) if(Clip) ++Loaded;
-        UE_LOG(LogTemp,Display,TEXT("ASCENSION_MODEL_LOADED scale=%.3f height=%.1f clips=%d/5"),Scale,Bounds.BoxExtent.Z*2*Scale,Loaded);
+        UE_LOG(LogTemp,Display,TEXT("ASCENSION_MODEL_LOADED scale=%.3f height=%.1f clips=%d/6"),Scale,Bounds.BoxExtent.Z*2*Scale,Loaded);
         return true;
     }
     void Visual(ACharacter* Character,const TArray<TObjectPtr<UAnimSequence>>& Clips,int32 State,int32& Previous,float Duration=0)
@@ -295,31 +297,28 @@ void ACLHero::Tick(float Delta)
     // Show the sword motion while the capsule keeps moving. Charging holds
     // the wind-up pose; release plays the remainder of the heavy slash.
     const int32 State=T<DodgeEnd?4:bCharging?3:T<AttackEnd?(bHeavy?3:2):MoveVelocity().SizeSquared2D()>100?1:0;
-    if(UsesBladeWave() && bHasModel)
+    // 주인공은 항상 섞는 동작(UCLHeroMotion)으로 그린다: 대기↔달리기, 동작 시작·끝, 동작끼리 바뀔 때 모두 부드럽게 넘어간다.
+    if(bHasModel)
     {
         if(State==4 && VisualState!=4) GetMesh()->SetRelativeRotation(FRotator(0,270,0));
         UCLHeroMotion* Motion=Cast<UCLHeroMotion>(GetMesh()->GetAnimInstance());
         if(!Motion) { GetMesh()->SetAnimInstanceClass(UCLHeroMotion::StaticClass()); Motion=Cast<UCLHeroMotion>(GetMesh()->GetAnimInstance()); }
-        if(Motion && Clips.Num()==5)
+        if(Motion && Clips.Num()>=5)
         {
-            Motion->IdleClip=Clips[0]; Motion->RunClip=Clips[1];
-            Motion->BaseTime+=Delta; Motion->MovingWeight=FMath::Clamp(MoveVelocity().Size2D()/220.f,0.f,1.f);
-            Motion->ActionWeight=State>=2?1.f:0.f;
+            Motion->IdleClip=Clips[0]; Motion->RunClip=Clips[1]; Motion->WalkClip=Clips.IsValidIndex(5)?Clips[5]:nullptr;
+            Motion->BaseTime+=Delta; Motion->Speed=State==4?0.f:float(MoveVelocity().Size2D());
+            Motion->ActionWeight=State>=2 && Clips[State]?1.f:0.f;
+            Motion->ActionTravel=State==4?UCLHeroMotion::DodgeTravel(float((T-DodgeStart)/(DodgeEnd-DodgeStart))):-1.f;
             if(State>=2 && Clips[State])
             {
                 Motion->ActionClip=Clips[State]; Motion->bFullBodyAction=State==4;
-                if(State==4) Motion->ActionTime=float((T-DodgeStart)/(DodgeEnd-DodgeStart))*Clips[4]->GetPlayLength();
-                else if(bCharging) Motion->ActionTime=.55f+ChargeProgress()*.55f;
-                else
-                {
-                    const float Start=bHeavy?1.1f:.1f,Padding=bHeavy?.9f:.2f;
-                    Motion->ActionTime=Start+float((T-AttackStart)/(AttackEnd-AttackStart))*(Clips[State]->GetPlayLength()-Start-Padding);
-                }
+                if(State==4) Motion->ActionTime=UCLHeroMotion::ActionClipTime(4,float(T-DodgeStart),float(DodgeEnd-DodgeStart),0);
+                else if(bCharging) Motion->ActionTime=UCLHeroMotion::ChargeClipTime(ChargeProgress());
+                else Motion->ActionTime=UCLHeroMotion::ActionClipTime(State,float(T-AttackStart),float(AttackEnd-AttackStart),float(HitTime-AttackStart));
             }
         }
         VisualState=State;
     }
-    else Lab::Visual(this,Clips,State,VisualState,T<DodgeEnd?float(DodgeEnd-DodgeStart):T<AttackEnd?float(AttackEnd-AttackStart):0);
     if(bCharging)
     {
         const FVector Center=GetActorLocation()+FVector(0,0,30)+GetActorForwardVector()*50;
@@ -354,15 +353,18 @@ void ACLHero::Tick(float Delta)
     }
     if((UsesBladeWave() || T>=AttackEnd) && T>=DodgeEnd)
     {
-        const FRotator Facing(0,GetControlRotation().Yaw,0);
-        SetActorRotation(FMath::RInterpTo(GetActorRotation(),Facing,Delta,18.f));
+        // 몸은 이동 방향으로 돌아선다. 락온 중이거나(대상을 보며 옆걸음) 생존 모드에서 움직이며 베는 동안은 카메라(조준) 방향,
+        // 멈춰 있으면 마지막 방향을 유지한다. 공격·회피를 시작할 때는 각각 조준·회피 방향으로 바로 돈다.
+        const FVector Move=MoveVelocity();
+        if(IsValid(Locked) || T<AttackEnd) SetActorRotation(FMath::RInterpTo(GetActorRotation(),FRotator(0,GetControlRotation().Yaw,0),Delta,18.f));
+        else if(Move.SizeSquared2D()>FMath::Square(30.f)) SetActorRotation(FMath::RInterpTo(GetActorRotation(),FRotator(0,Move.Rotation().Yaw,0),Delta,12.f));
     }
     if(T<AttackEnd && !UsesBladeWave()) { ConsumeMovementInputVector(); GetCharacterMovement()->StopMovementImmediately(); }
     if(T<DodgeEnd && !bNetMovement) // 온라인 회피 이동은 공유 이동 코드가 같은 곡선으로 계산한다
     {
         // Integrate a smooth 300cm roll over 0.65s, independent of frame rate.
         const float Progress=FMath::Clamp(float((T-DodgeStart)/(DodgeEnd-DodgeStart)),0.f,1.f);
-        const auto Distance=[](float A) { return 300.f*(A-FMath::Sin(2*PI*A)/(2*PI)); };
+        const auto Distance=[](float A) { return 300.f*UCLHeroMotion::DodgeTravel(A); };
         FHitResult Hit; SetActorLocation(GetActorLocation()+DashDirection*(Distance(Progress)-Distance(DodgeProgress)),true,&Hit);
         DodgeProgress=Progress;
         DrawDebugLine(GetWorld(),GetActorLocation(),GetActorLocation()-DashDirection*70,FColor::Cyan,false,.15,0,4);
@@ -1711,8 +1713,24 @@ void AAscensionMode::Tick(float Delta)
             else if(VerifyStage==3) { FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir()/TEXT("MotionRun.png"),true,false); VerifyStage=4; NextCheck=T+.3; }
             else if(VerifyStage==4) { P->Attack(); VerifyStage=5; NextCheck=T+.18; }
             else if(VerifyStage==5) { FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir()/TEXT("MotionAttack.png"),true,false); VerifyStage=6; NextCheck=T+.5; }
-            else if(VerifyStage==6) { P->Dodge(); VerifyStage=7; NextCheck=T+.3; }
-            else if(VerifyStage==7) { FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir()/TEXT("MotionRoll.png"),true,false); VerifyStage=8; NextCheck=T+1; }
+            else if(VerifyStage==6) { P->Dodge(); VerifyStage=7; VerifyPosition=FVector::ZeroVector; VerifyEnemyPosition=FVector::ZeroVector; NextCheck=T+.01; }
+            else if(VerifyStage==7)
+            {
+                // 구르는 동안 매 프레임: 몸 정면(어깨선 × 위)과 회피 방향의 내적, 머리가 몸 중심보다 회피 방향으로 앞서는 거리,
+                // 골반이 캡슐에서 벗어난 거리(제자리 처리 확인). VerifyPosition = (내적 합, 머리 앞섬 합, 표본 수), VerifyEnemyPosition.X = 골반 최대 벗어남
+                USkeletalMeshComponent* Mesh=P->GetMesh();
+                const FVector Side=Mesh->GetSocketLocation(Lab::RigBone(Mesh,TEXT("RightShoulder"),TEXT("upperarm_r")))-Mesh->GetSocketLocation(Lab::RigBone(Mesh,TEXT("LeftShoulder"),TEXT("upperarm_l")));
+                const FVector Hips=Mesh->GetSocketLocation(Lab::RigBone(Mesh,TEXT("Hips"),TEXT("pelvis")));
+                const FVector Head=Mesh->GetSocketLocation(Lab::RigBone(Mesh,TEXT("Head"),TEXT("head")));
+                const FVector Dash=P->DashDirection.GetSafeNormal2D();
+                VerifyPosition+=FVector(FVector::DotProduct(FVector::CrossProduct(Side,FVector::UpVector).GetSafeNormal2D(),Dash),FVector::DotProduct(Head-Hips,Dash),1);
+                VerifyEnemyPosition.X=FMath::Max(VerifyEnemyPosition.X,float(FVector::Dist2D(Hips,P->GetActorLocation())));
+                if(VerifyPosition.Z==12) FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir()/TEXT("MotionRoll.png"),true,false);
+                if(T<P->DodgeEnd) { NextCheck=T+.01; return; }
+                const float N=FMath::Max(1.f,float(VerifyPosition.Z));
+                UE_LOG(LogTemp,Display,TEXT("ASCENSION_ROLL_FACING mean_dot=%.3f mean_head_lead=%.1f max_pelvis_offset=%.0f samples=%d"),VerifyPosition.X/N,VerifyPosition.Y/N,VerifyEnemyPosition.X,int32(N));
+                VerifyStage=8; NextCheck=T+1;
+            }
             else FPlatformMisc::RequestExit(false);
             return;
         }
@@ -1828,7 +1846,10 @@ void AAscensionMode::Tick(float Delta)
     else
     {
         Check(P->GetActorLocation().X<VerifyPosition.X-1,TEXT("movement_restored_after_dodge"));
-        Check(FVector::DotProduct(P->GetActorForwardVector(),FRotator(0,P->GetControlRotation().Yaw,0).Vector())>.99f,TEXT("movement_faces_camera_direction"));
+        // 카메라는 +X를 보고 -X로 움직였다: 몸은 카메라가 아니라 움직인 쪽으로 돌아서야 한다
+        const float Toward=FVector::DotProduct(P->GetActorForwardVector(),(P->GetActorLocation()-VerifyPosition).GetSafeNormal2D());
+        UE_LOG(LogTemp,Display,TEXT("ASCENSION_MOVE_FACING dot=%.3f yaw=%.1f"),Toward,P->GetActorRotation().Yaw);
+        Check(Toward>.5f,TEXT("movement_turns_toward_travel_direction"));
         UE_LOG(LogTemp,Display,TEXT("ASCENSION_VERIFY %s wall_trials=%d"),bFailed?TEXT("FAIL"):TEXT("PASS"),WallTrials);
         FPlatformMisc::RequestExitWithStatus(false,bFailed?1:0); bVerify=false;
     }

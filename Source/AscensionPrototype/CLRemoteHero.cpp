@@ -104,24 +104,26 @@ void ACLRemoteHero::UpdateVisual(double RenderTime, float Delta)
         if (State == 4 && bHasModel) GetMesh()->SetRelativeRotation(FRotator(0, 270, 0));
         ShownState = State;
     }
-    if (bHasModel && Clips.Num() == 5)
+    if (bHasModel && Clips.Num() >= 5)
     {
         if (UCLHeroMotion* Motion = Cast<UCLHeroMotion>(GetMesh()->GetAnimInstance()))
         {
             Motion->IdleClip = Clips[0];
             Motion->RunClip = Clips[1];
+            Motion->WalkClip = Clips.IsValidIndex(5) ? Clips[5] : nullptr;
             Motion->BaseTime = AnimTime;
-            Motion->MovingWeight = FMath::Clamp(Speed / 220.f, 0.f, 1.f);
+            Motion->Speed = State == 4 ? 0.f : Speed; // 걷기·달리기 재생 속도를 실제 이동 속도에 맞춘다
             const bool bAction = State >= 2 && State <= 4 && Clips[State];
             Motion->ActionWeight = bAction ? 1.f : 0.f;
+            Motion->ActionTravel = State == 4 ? UCLHeroMotion::DodgeTravel(float(AnimTime - ActionStart) / .65f) : -1.f;
             if (bAction)
             {
                 Motion->ActionClip = Clips[State];
                 Motion->bFullBodyAction = State == 4;
-                // 플레이어 쪽과 같은 구간을 비슷한 속도로 재생한다(공격 약 1.8배속, 회피 0.65초).
-                const float Start = State == 3 ? 1.1f : State == 2 ? .1f : 0.f;
-                const float Rate = State == 4 ? Clips[4]->GetPlayLength() / .65f : 1.8f;
-                Motion->ActionTime = Start + float(AnimTime - ActionStart) * Rate;
+                // 플레이어 쪽(ACLHero)과 같은 시간표: 공격 0.68초(판정 0.28), 강공격 0.95초(판정 0.46), 회피 0.65초
+                const float Elapsed = float(AnimTime - ActionStart);
+                Motion->ActionTime = State == 4 ? UCLHeroMotion::ActionClipTime(4, Elapsed, .65f, 0)
+                                   : UCLHeroMotion::ActionClipTime(State, Elapsed, State == 3 ? .95f : .68f, State == 3 ? .46f : .28f);
             }
         }
         if (State != 4) Lab::AlignBodyForward(GetMesh(), 0.f);
