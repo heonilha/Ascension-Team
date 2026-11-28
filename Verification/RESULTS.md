@@ -149,3 +149,10 @@ BladeWave.png 실제 렌더링에서 이동 중 청록색 검기와 체력/경�
 - 해결하지 못한 문제: 클라이언트 3개를 동시에 띄웠을 때 2번(6개 중 2개) 접속 직후 몬스터 모델을 만들다가(`Lab::SetModel`, 49번째 몬스터에서 약 5초 멈춘 뒤 접근 위반) 꺼졌다. 메모리는 충분했다(여유 14GB). 원인은 찾지 못했다. 몬스터를 내 주변 120m 안에서만, 한 묶음에 12마리씩 만들도록 바꾼 뒤 클라이언트 2개와 1개 실행에서는 다시 나지 않았지만, 고쳐졌다고 확인한 것은 아니다.
 - 수정 뒤 회귀: `-AscensionVerify` PASS wall_trials=20, `-AscensionSurvivalVerify` PASS, `VerifySkills` PASS.
 - 미검증: 여러 팀(12명)이 500m 맵에서 함께 하는 실제 대전과 그때의 부하, 몬스터 표시 범위 경계(120m)에서 사냥하는 느낌.
+
+2026-11-28 주인공 모델 교체 검증 (Fab 'Man' 03번):
+- 클라이언트 빌드 성공. 모델 로드 로그 `ASCENSION_MODEL_LOADED scale=0.973 height=180.0 clips=2/5`, 검 부착 본 `hand_r`.
+- `-AscensionView -AscensionFacingVerify` PASS attacks=8(4방향 × 일반/강공격, 몸 정면 dot 0.946~0.952), 시작 자세 `ASCENSION_MODEL_FACING dot=1.000`. `-AscensionVerify` PASS wall_trials=20, `-AscensionSurvivalVerify` PASS(`-AscensionVerify`와 함께 실행. 생존 옵션만 주었을 때는 5분 안에 끝나지 않았다).
+- 온라인: 실행 중인 서버(시간 0.1)에 같은 팀 클라이언트 2개를 붙여 다른 플레이어(원격 캐릭터)도 새 모델로 보이는 것을 화면으로 확인했다.
+- 텍스처를 2K로 줄이기 전후 같은 장면(AttackFacing)을 비교해 차이가 보이지 않았다. 줄인 뒤에도 정면 시험 PASS.
+- 미검증: 공격·회피 동작(아직 없음), 믹사모 동작 리타깃.
