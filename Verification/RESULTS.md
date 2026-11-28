@@ -156,3 +156,11 @@ BladeWave.png 실제 렌더링에서 이동 중 청록색 검기와 체력/경�
 - 온라인: 실행 중인 서버(시간 0.1)에 같은 팀 클라이언트 2개를 붙여 다른 플레이어(원격 캐릭터)도 새 모델로 보이는 것을 화면으로 확인했다.
 - 텍스처를 2K로 줄이기 전후 같은 장면(AttackFacing)을 비교해 차이가 보이지 않았다. 줄인 뒤에도 정면 시험 PASS.
 - 미검증: 공격·회피 동작(아직 없음), 믹사모 동작 리타깃.
+
+2026-11-28 믹사모 동작·이동 방향 회전 검증:
+- `ImportMixamo.py` 실행: IK 리그 2개(템플릿 인식, 체인 21개, 리타깃 루트 Hips→pelvis), 동작 4개(A_Run 21프레임·A_Roll 76·A_Slash 45·A_Walk 31, 모두 UE4_Mannequin_Skeleton). 리타깃 결과 root 본은 모든 클립에서 원점에 머문다.
+- 처음 연결했을 때 구르기 몸이 회피 반대쪽을 봤다(평균 내적 -0.41, 골반이 캡슐에서 99cm 벗어남). 원인은 리타깃이 골반 움직임을 root 본에 실은 것. 리타깃 루트를 고친 뒤 `-AscensionMotionView` 구르기 측정: 몸 정면·회피 방향 평균 내적 0.83, 머리가 몸 중심보다 회피 방향으로 평균 39cm 앞섬, 골반이 캡슐에서 최대 2cm.
+- `-AscensionVerify` PASS wall_trials=20(새 확인 `movement_turns_toward_travel_direction`: -X로 움직인 뒤 몸 방향 내적 0.97), `-AscensionCombatFeelView` PASS(움직이며 베기·발과 손 움직임·몸 정면·구르기 입력 방향), `-AscensionFacingVerify` PASS attacks=8, `-AscensionDodgeVerify` PASS cases=8, `-AscensionSurvivalVerify`·`-AscensionCombatVerify`(각각 `-AscensionVerify`와 함께)·`-AscensionBossVerify`·`-AscensionSkillVerify` PASS.
+- 온라인: 같은 팀 클라이언트 2개로 접속해 두 캐릭터 모두 새 동작 묶음(clips 6/6)으로 뜨는 것을 화면으로 확인했다.
+- 해결하지 못한 문제: 시험을 이어서 돌리던 중 `-AscensionFacingVerify` 한 번이 시작 6프레임째 HUD의 `RemainingEnemies`에서 접근 위반으로 꺼졌다(호출 스택이 깨져 있음). 같은 시험을 두 번 다시 돌려 모두 통과했고 그 뒤 8개 시험 묶음에서도 다시 나지 않았다. 앞서 기록한 접속 직후 꺼짐과 같은 원인인지는 모른다.
+- 미검증: 사람이 직접 조작하며 보는 느낌(방향 전환 중 발 미끄러짐, 연속 공격 섞임), 다른 플레이어가 움직일 때 걷기·달리기 섞임.
