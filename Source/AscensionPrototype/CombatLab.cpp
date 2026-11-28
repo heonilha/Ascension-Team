@@ -50,16 +50,26 @@ namespace Lab
         const AAscensionMode* Mode=Actor->GetWorld()?Cast<AAscensionMode>(Actor->GetWorld()->GetAuthGameMode()):nullptr;
         return Mode && Mode->bOnline && IsValid(Mode->Net)?Mode->Net.Get():nullptr;
     }
+    // 본 이름: 몬스터(Meshy, 믹사모식 이름)와 주인공(Fab 캐릭터, UE4 마네킹 스켈레톤) 둘 다 찾는다.
+    FName RigBone(const USkeletalMeshComponent* Mesh,const TCHAR* Mixamo,const TCHAR* Epic)
+    {
+        return Mesh && Mesh->GetBoneIndex(Epic)!=INDEX_NONE?FName(Epic):FName(Mixamo);
+    }
+    // 주인공 모델: Fab 'Man' 캐릭터 03번(UE4 마네킹 스켈레톤). 동작은 대기·달리기만 있고, 공격·강공격·회피 클립은
+    // 믹사모에서 받아 오기 전까지 비워 둔다(비어 있으면 대기·달리기 자세를 유지).
+    const TCHAR* HeroMeshPath=TEXT("/Game/Man/Mesh/Full/SK_Man_Full_03.SK_Man_Full_03");
     bool SetModel(ACharacter* Character,TArray<TObjectPtr<UAnimSequence>>& Clips,bool Monster=false)
     {
-        USkeletalMesh* Model=LoadObject<USkeletalMesh>(nullptr,Monster?TEXT("/Game/Models/UndeadSentinel/UndeadSentinelRig.UndeadSentinelRig"):TEXT("/Game/Models/SharedKnightRig.SharedKnightRig"));
+        USkeletalMesh* Model=LoadObject<USkeletalMesh>(nullptr,Monster?TEXT("/Game/Models/UndeadSentinel/UndeadSentinelRig.UndeadSentinelRig"):HeroMeshPath);
         if(!Model) return false;
         USkeletalMeshComponent* Mesh=Character->GetMesh(); Mesh->SetSkeletalMeshAsset(Model); Mesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
         FBoxSphereBounds Bounds=Model->GetImportedBounds(); float Scale=180.f/FMath::Max(1.f,float(Bounds.BoxExtent.Z*2));
-        Mesh->SetRelativeScale3D(FVector(Scale)); Mesh->SetRelativeRotation(FRotator(0,180,0));
+        // 마네킹은 +Y를 보고 서 있으므로 -90도(270) 돌린다
+        Mesh->SetRelativeScale3D(FVector(Scale)); Mesh->SetRelativeRotation(FRotator(0,Monster?180:270,0));
         Mesh->SetRelativeLocation(FVector(0,0,-88-(Bounds.Origin.Z-Bounds.BoxExtent.Z)*Scale));
-        if(UMaterialInterface* Material=LoadObject<UMaterialInterface>(nullptr,Monster?TEXT("/Game/Models/UndeadSentinel/M_UndeadSentinel.M_UndeadSentinel"):TEXT("/Game/Models/M_SharedKnight.M_SharedKnight")))
-            for(int32 I=0;I<Mesh->GetNumMaterials();++I) Mesh->SetMaterial(I,Material);
+        if(Monster)
+            if(UMaterialInterface* Material=LoadObject<UMaterialInterface>(nullptr,TEXT("/Game/Models/UndeadSentinel/M_UndeadSentinel.M_UndeadSentinel")))
+                for(int32 I=0;I<Mesh->GetNumMaterials();++I) Mesh->SetMaterial(I,Material);
         if(Monster)
         {
             const TCHAR* MonsterPaths[]={TEXT("/Game/Models/UndeadSentinel/UndeadSentinelActions_Idle.UndeadSentinelActions_Idle"),TEXT("/Game/Models/UndeadSentinel/UndeadSentinelRun.UndeadSentinelRun"),TEXT("/Game/Models/UndeadSentinel/UndeadSentinelActions_Right_Hand_Sword_Slash.UndeadSentinelActions_Right_Hand_Sword_Slash")};
@@ -67,8 +77,9 @@ namespace Lab
             int32 Loaded=0; for(const auto& Clip:Clips) if(Clip) ++Loaded;
             UE_LOG(LogTemp,Display,TEXT("ASCENSION_MONSTER_MODEL_LOADED clips=%d/3"),Loaded); return Loaded==3;
         }
-        const TCHAR* Paths[]={TEXT("/Game/Models/SharedKnightActions_Idle.SharedKnightActions_Idle"),TEXT("/Game/Models/SharedKnightRun.SharedKnightRun"),TEXT("/Game/Models/SharedKnightActions_Right_Hand_Sword_Slash.SharedKnightActions_Right_Hand_Sword_Slash"),TEXT("/Game/Models/SharedKnightActions_Charged_Upward_Slash.SharedKnightActions_Charged_Upward_Slash"),TEXT("/Game/Models/SharedKnightActions_Roll_Dodge.SharedKnightActions_Roll_Dodge")};
-        for(const TCHAR* Path:Paths) Clips.Add(LoadObject<UAnimSequence>(nullptr,Path));
+        // 순서: 0 대기 1 달리기 2 공격 3 강공격 4 회피 (nullptr = 아직 없음)
+        const TCHAR* Paths[]={TEXT("/Game/Man/Demo/Animations/ThirdPersonIdle.ThirdPersonIdle"),TEXT("/Game/Man/Demo/Animations/ThirdPersonRun.ThirdPersonRun"),nullptr,nullptr,nullptr};
+        for(const TCHAR* Path:Paths) Clips.Add(Path?LoadObject<UAnimSequence>(nullptr,Path):nullptr);
         int32 Loaded=0; for(const auto& Clip:Clips) if(Clip) ++Loaded;
         UE_LOG(LogTemp,Display,TEXT("ASCENSION_MODEL_LOADED scale=%.3f height=%.1f clips=%d/5"),Scale,Bounds.BoxExtent.Z*2*Scale,Loaded);
         return true;
@@ -101,9 +112,11 @@ namespace Lab
     }
     void AlignBodyForward(USkeletalMeshComponent* Mesh,float Delta=0)
     {
-        if(Mesh->GetBoneIndex(TEXT("LeftShoulder"))==INDEX_NONE || Mesh->GetBoneIndex(TEXT("RightShoulder"))==INDEX_NONE || Mesh->GetBoneIndex(TEXT("Head"))==INDEX_NONE || Mesh->GetBoneIndex(TEXT("Hips"))==INDEX_NONE) return;
-        const FVector Right=Mesh->GetBoneLocation(TEXT("RightShoulder"),EBoneSpaces::ComponentSpace)-Mesh->GetBoneLocation(TEXT("LeftShoulder"),EBoneSpaces::ComponentSpace);
-        const FVector Up=Mesh->GetBoneLocation(TEXT("Head"),EBoneSpaces::ComponentSpace)-Mesh->GetBoneLocation(TEXT("Hips"),EBoneSpaces::ComponentSpace);
+        const FName L=RigBone(Mesh,TEXT("LeftShoulder"),TEXT("upperarm_l")),R=RigBone(Mesh,TEXT("RightShoulder"),TEXT("upperarm_r"));
+        const FName H=RigBone(Mesh,TEXT("Head"),TEXT("head")),P=RigBone(Mesh,TEXT("Hips"),TEXT("pelvis"));
+        if(Mesh->GetBoneIndex(L)==INDEX_NONE || Mesh->GetBoneIndex(R)==INDEX_NONE || Mesh->GetBoneIndex(H)==INDEX_NONE || Mesh->GetBoneIndex(P)==INDEX_NONE) return;
+        const FVector Right=Mesh->GetBoneLocation(R,EBoneSpaces::ComponentSpace)-Mesh->GetBoneLocation(L,EBoneSpaces::ComponentSpace);
+        const FVector Up=Mesh->GetBoneLocation(H,EBoneSpaces::ComponentSpace)-Mesh->GetBoneLocation(P,EBoneSpaces::ComponentSpace);
         const FVector Forward=FVector::CrossProduct(Right,Up).GetSafeNormal2D();
         if(!Forward.IsNearlyZero())
         {
@@ -327,7 +340,7 @@ void ACLHero::Tick(float Delta)
         if(T<DodgeEnd || T<AttackEnd || bCharging)
         {
             // Keep the animated pelvis over the capsule; gameplay owns horizontal roll travel.
-            const FVector Hips=GetMesh()->GetBoneLocation(TEXT("hips"),EBoneSpaces::ComponentSpace);
+            const FVector Hips=GetMesh()->GetBoneLocation(Lab::RigBone(GetMesh(),TEXT("Hips"),TEXT("pelvis")),EBoneSpaces::ComponentSpace);
             Offset-=GetMesh()->GetRelativeRotation().RotateVector(FVector(Hips.X,Hips.Y,0)*GetMesh()->GetRelativeScale3D());
         }
         GetMesh()->SetRelativeLocation(Offset);
@@ -1462,8 +1475,8 @@ void AAscensionMode::Tick(float Delta)
         else if(VerifyStage==2)
         {
             Check(P->VisualState==2 && P->GetVelocity().Size2D()>10,TEXT("render_moving_slash"));
-            VerifyPosition=P->GetActorTransform().InverseTransformPosition(P->GetMesh()->GetSocketLocation(TEXT("RightFoot")));
-            VerifyEnemyPosition=P->GetActorTransform().InverseTransformPosition(P->GetMesh()->GetSocketLocation(TEXT("RightHand")));
+            VerifyPosition=P->GetActorTransform().InverseTransformPosition(P->GetMesh()->GetSocketLocation(Lab::RigBone(P->GetMesh(),TEXT("RightFoot"),TEXT("foot_r"))));
+            VerifyEnemyPosition=P->GetActorTransform().InverseTransformPosition(P->GetMesh()->GetSocketLocation(Lab::RigBone(P->GetMesh(),TEXT("RightHand"),TEXT("hand_r"))));
             FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir()/TEXT("MovingSlashEarly.png"),true,false); VerifyStage=9; MotionFrames=0; NextCheck=T+.18;
         }
         else if(VerifyStage==9)
@@ -1471,11 +1484,11 @@ void AAscensionMode::Tick(float Delta)
             // A screenshot/shader hitch can advance world time in a single frame.
             // Compare poses after several evaluated frames, not adjacent buffers.
             if(MotionFrames<8) { NextCheck=T+.001; return; }
-            const FVector Foot=P->GetActorTransform().InverseTransformPosition(P->GetMesh()->GetSocketLocation(TEXT("RightFoot")));
-            const FVector Hand=P->GetActorTransform().InverseTransformPosition(P->GetMesh()->GetSocketLocation(TEXT("RightHand")));
+            const FVector Foot=P->GetActorTransform().InverseTransformPosition(P->GetMesh()->GetSocketLocation(Lab::RigBone(P->GetMesh(),TEXT("RightFoot"),TEXT("foot_r"))));
+            const FVector Hand=P->GetActorTransform().InverseTransformPosition(P->GetMesh()->GetSocketLocation(Lab::RigBone(P->GetMesh(),TEXT("RightHand"),TEXT("hand_r"))));
             Check(Cast<UCLHeroMotion>(P->GetMesh()->GetAnimInstance()) && FVector::Dist(Foot,VerifyPosition)>3 && FVector::Dist(Hand,VerifyEnemyPosition)>3,TEXT("render_feet_and_sword_hand_animate_while_moving"));
-            const FVector Side=P->GetMesh()->GetSocketLocation(TEXT("RightShoulder"))-P->GetMesh()->GetSocketLocation(TEXT("LeftShoulder"));
-            const FVector Up=P->GetMesh()->GetSocketLocation(TEXT("Head"))-P->GetMesh()->GetSocketLocation(TEXT("Hips"));
+            const FVector Side=P->GetMesh()->GetSocketLocation(Lab::RigBone(P->GetMesh(),TEXT("RightShoulder"),TEXT("upperarm_r")))-P->GetMesh()->GetSocketLocation(Lab::RigBone(P->GetMesh(),TEXT("LeftShoulder"),TEXT("upperarm_l")));
+            const FVector Up=P->GetMesh()->GetSocketLocation(Lab::RigBone(P->GetMesh(),TEXT("Head"),TEXT("head")))-P->GetMesh()->GetSocketLocation(Lab::RigBone(P->GetMesh(),TEXT("Hips"),TEXT("pelvis")));
             const float Dot=FVector::DotProduct(FVector::CrossProduct(Side,Up).GetSafeNormal2D(),P->GetActorForwardVector());
             UE_LOG(LogTemp,Display,TEXT("ASCENSION_BLENDED_MOTION foot_delta=%.1f hand_delta=%.1f facing_dot=%.3f"),FVector::Dist(Foot,VerifyPosition),FVector::Dist(Hand,VerifyEnemyPosition),Dot);
             Check(Dot>.65f,TEXT("render_blended_slash_faces_forward"));
@@ -1670,8 +1683,8 @@ void AAscensionMode::Tick(float Delta)
             else
             {
                 USkeletalMeshComponent* Mesh=P->GetMesh();
-                const FVector Side=Mesh->GetSocketLocation(TEXT("RightShoulder"))-Mesh->GetSocketLocation(TEXT("LeftShoulder"));
-                const FVector Up=Mesh->GetSocketLocation(TEXT("Head"))-Mesh->GetSocketLocation(TEXT("Hips"));
+                const FVector Side=Mesh->GetSocketLocation(Lab::RigBone(Mesh,TEXT("RightShoulder"),TEXT("upperarm_r")))-Mesh->GetSocketLocation(Lab::RigBone(Mesh,TEXT("LeftShoulder"),TEXT("upperarm_l")));
+                const FVector Up=Mesh->GetSocketLocation(Lab::RigBone(Mesh,TEXT("Head"),TEXT("head")))-Mesh->GetSocketLocation(Lab::RigBone(Mesh,TEXT("Hips"),TEXT("pelvis")));
                 const FVector Forward=FVector::CrossProduct(Side,Up).GetSafeNormal2D();
                 const float Dot=FVector::DotProduct(Forward,P->GetActorForwardVector());
                 UE_LOG(LogTemp,Display,TEXT("ASCENSION_ATTACK_FACING step=%d heavy=%d yaw=%.1f dot=%.3f"),Step,Step%2,P->GetActorRotation().Yaw,Dot);
@@ -1721,16 +1734,9 @@ void AAscensionMode::Tick(float Delta)
         else if(VerifyStage==1)
         {
             USkeletalMeshComponent* Mesh=P->GetMesh();
-            FName Left,Right,Head,Hips;
-            for(int32 I=0;I<Mesh->GetNumBones();++I)
-            {
-                FName Bone=Mesh->GetBoneName(I); FString Name=Bone.ToString().ToLower();
-                if(Name.Contains(TEXT("leftshoulder"))) Left=Bone;
-                if(Name.Contains(TEXT("rightshoulder"))) Right=Bone;
-                if(Name==TEXT("head")) Head=Bone;
-                if(Name==TEXT("hips")) Hips=Bone;
-            }
-            if(!Left.IsNone() && !Right.IsNone() && !Head.IsNone() && !Hips.IsNone())
+            const FName Left=Lab::RigBone(Mesh,TEXT("LeftShoulder"),TEXT("upperarm_l")),Right=Lab::RigBone(Mesh,TEXT("RightShoulder"),TEXT("upperarm_r"));
+            const FName Head=Lab::RigBone(Mesh,TEXT("Head"),TEXT("head")),Hips=Lab::RigBone(Mesh,TEXT("Hips"),TEXT("pelvis"));
+            if(Mesh->GetBoneIndex(Left)!=INDEX_NONE && Mesh->GetBoneIndex(Right)!=INDEX_NONE && Mesh->GetBoneIndex(Head)!=INDEX_NONE && Mesh->GetBoneIndex(Hips)!=INDEX_NONE)
             {
                 const FVector Side=(Mesh->GetSocketLocation(Right)-Mesh->GetSocketLocation(Left)).GetSafeNormal();
                 const FVector Up=(Mesh->GetSocketLocation(Head)-Mesh->GetSocketLocation(Hips)).GetSafeNormal();
